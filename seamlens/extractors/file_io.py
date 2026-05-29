@@ -15,6 +15,13 @@ from .base import Extractor, iter_py_files, parse_py, module_id, call_name
 _WRITE_MODES = ("w", "a", "x")
 # existence/stat probes -- for signal & marker files this IS the read
 _PROBE_LEAVES = {"exists", "isfile", "isdir", "lexists", "getsize", "stat", "getmtime"}
+# atomic-write idiom: write to <name>.tmp then move it into place. The producer
+# action is the move, not the open(tmp,'w') -- without this the artifact looks
+# read-only and shows as a false orphan (the dominant orphan_artifact FP). Matched
+# by fully-qualified name so str.replace() doesn't false-trigger; the destination
+# (2nd positional arg) is the produced basename.
+_MOVE_CALLS = ("os.rename", "os.replace", "shutil.move", "shutil.copy",
+               "shutil.copy2", "shutil.copyfile")
 
 
 def _path_literals(node):
@@ -108,6 +115,9 @@ class FileIOExtractor(Extractor):
                 if short == "open" and n.args:
                     direction = _open_mode(n)
                     path_arg = n.args[0]
+                elif cn in _MOVE_CALLS and len(n.args) >= 2:
+                    direction = "write"          # move/copy produces the dest
+                    path_arg = n.args[1]
                 elif short in _PROBE_LEAVES and n.args:
                     direction = "read"          # existence/stat probe == read of a marker
                     path_arg = n.args[0]
