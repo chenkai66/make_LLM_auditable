@@ -34,11 +34,14 @@ def _node_element(n):
     return {"data": {
         "id": n["id"],
         "label": n.get("name") or n["id"],
+        "name": n.get("name") or n["id"],
         "kind": kind,
         "group": KIND_GROUP.get(kind, kind),
         "role": role,
         "file": n.get("file"),
+        "line": n.get("line"),
         "importers": a.get("importers"),
+        "attrs": a,
     }}
 
 
@@ -54,6 +57,8 @@ def _edge_element(e):
         "source": src,
         "target": dst,
         "kind": kind,
+        "file": e.get("file"),
+        "line": e.get("line"),
     }}
 
 
