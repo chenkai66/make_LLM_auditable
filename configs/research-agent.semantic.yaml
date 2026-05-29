@@ -1,0 +1,41 @@
+# Layer 2: curated semantic overlay for research-agent.
+# Thin by design -- only couplings/intents that cannot be derived from code.
+# Place at /data/research-agent/seamlens.semantic.yaml
+
+artifact_groups:
+  experiment_completion:
+    members: ["done.json", "results.json", "result.json", "results_summary.json"]
+    rationale: >
+      Equivalent experiment-completion signals. The experimenter's canonical
+      output is results_summary.json; done.json is the marker. invariant_checker
+      must accept the full set or completed experiments get healed back to
+      'designed' and loop forever (incident 2026-05-29).
+
+constant_groups:
+  worker_capacity:
+    names: ["WORKER_CAP", "_W_CAP", "K_PER_CORE", "MAX_WORKERS", "GLOBAL_MAX"]
+    rationale: >
+      Per-core worker/slot capacity. Divergence (boss cores*6 vs claude_runner
+      cores*9) caused boss to reject whole batches early (79->0 backpressure).
+      Should route through worker_tuning.json.
+
+# Artifacts with no in-repo producer that are legitimately external/runtime
+# inputs (config written by ops, runtime state, downloaded by worker, etc.).
+allow_orphan_reads:
+  - "config.json"
+  - "worker_tuning.json"
+  - "graph.db"
+  - "errors.db"
+  - "fleet_secret"
+  - "oss_secrets"
+
+daemons:
+  - "framework/kg_patch_merger.py"
+  - "fleet_server.py"
+  - "supervisor.py"
+  - "coordinator.py"
+  - "scripts/kg_producer.py"
+
+invariants:
+  - "experiment FSM: 'designed' may reconcile to 'executed' iff a valid results_summary.json exists"
+  - "any daemon importing error_logger must add an explicit StreamHandler (basicConfig becomes no-op)"

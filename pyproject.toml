@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seamlens"
+version = "0.1.0"
+description = "Make a complex system auditable: derive a system graph from source and lint the seams between components for real bug-classes."
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "MIT" }
+authors = [{ name = "chenkai66" }]
+keywords = ["static-analysis", "linter", "graph", "auditability", "system-graph"]
+dependencies = ["PyYAML>=5.1"]
+
+[project.scripts]
+seamlens = "seamlens.cli.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["seamlens*"]

@@ -1,0 +1,34 @@
+# seamlens config for the research-agent (CK Planet) system.
+# Place at /data/research-agent/seamlens.yaml
+roots: ["framework", "agents", "lib", "scripts", "."]
+exclude:
+  - "__pycache__"
+  - ".git"
+  - ".seamlens"
+  - "_archive"
+  - "_legacy_archive"
+  - "backups"
+  - "data.default"
+  - "data"
+  - "experiments"
+  - "output"
+  - "workspaces"
+  - "kaizen-pkg"
+  - "node_modules"
+  - "static"
+io_helpers:
+  read:  ["read_json", "load_json", "json.load", "_safe_read_json", "read_text"]
+  write: ["write_json", "save_json", "dump_json", "atomic_write", "_atomic_write", "write_text"]
+logger:
+  install_fn: "error_logger.install"
+  framework_setup: "logging.basicConfig"
+  explicit_handler_markers: ["StreamHandler", "addHandler"]
+prod_path_markers:
+  - "errors.db"
+  - "graph.db"
+  - "logs/errors.db"
+fsm_sources:
+  - "framework/pipeline_state.py:PROTOCOL_TRANSITIONS"
+test_file_markers: ["test_", "_test", "/tests/", "conftest"]
+semantic_overlay: "seamlens.semantic.yaml"
+db_path: ".seamlens/system_graph.db"
