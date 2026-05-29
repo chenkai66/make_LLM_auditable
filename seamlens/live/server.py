@@ -14,6 +14,7 @@ buffer on connect, so a late-joining tab catches up.
 import json
 import os
 import queue
+import subprocess
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,20 @@ from . import graphview, narrator, rescan
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 _EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 _RING_MAX = 200
+# control messages (clear/delete) are broadcast to sync tabs but are NOT part of
+# the durable record themselves -- they must not be persisted or replayed.
+# answer_step is live streaming progress ("reading X..."); the finished answer card
+# replaces the placeholder on resolve, so the steps are transient by design.
+_EPHEMERAL_TYPES = {"control", "answer_step"}
+
+
+def _git_rev(root):
+    try:
+        return subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return ""
 
 
 def _finding_key(f):
@@ -38,6 +53,10 @@ class LiveState:
         self._subs = []
         self._subs_lock = threading.Lock()
         self.ring = []
+        self.ring_lock = threading.Lock()  # publish() runs from N daemon threads
+        self._next_id = 0     # monotonic per-message id, for delete/dedup across tabs
+        self.feed_path = cfg.abspath(".seamlens/live_feed.jsonl")
+        self.git_rev = ""     # set in serve(); stamped onto every learned meta record
         self.prev_snapshot = (set(), {})
         self.prev_finding_keys = set()
         self.narrate_prov, self.qa_prov = narrator.build_providers(cfg)
@@ -45,6 +64,8 @@ class LiveState:
         self.intent = None    # latest UserPromptSubmit -- the dev's GOAL for the agent
         self.story = []        # running architect summaries, fed back for continuity
         self.story_lock = threading.Lock()  # _narrate_async runs in N daemon threads
+        # One durable claude session for /ask, so follow-ups (--resume) keep memory.
+        self.qa_session = {"id": None}
 
     # -- pub/sub --------------------------------------------------------------
     def subscribe(self):
@@ -59,9 +80,19 @@ class LiveState:
                 self._subs.remove(q)
 
     def publish(self, msg):
-        self.ring.append(msg)
-        if len(self.ring) > _RING_MAX:
-            self.ring = self.ring[-_RING_MAX:]
+        # Every message gets a monotonic id so the UI can delete a single card and
+        # all tabs stay in sync. Control messages (clear/delete) are broadcast for
+        # cross-tab sync but are NOT part of the durable record -- skip ring+disk.
+        ephemeral = msg.get("type") in _EPHEMERAL_TYPES
+        with self.ring_lock:
+            if "id" not in msg:
+                self._next_id += 1
+                msg["id"] = self._next_id
+            if not ephemeral:
+                self.ring.append(msg)
+                if len(self.ring) > _RING_MAX:
+                    self.ring = self.ring[-_RING_MAX:]
+                self._persist(msg)
         with self._subs_lock:
             subs = list(self._subs)
         for q in subs:
@@ -70,8 +101,81 @@ class LiveState:
             except Exception:
                 pass
 
+    def resolve(self, mid, msg):
+        """Replace an already-published card (same id) with its finished form and
+        broadcast it -- e.g. a streamed answer whose final text supplants the
+        placeholder. Updates ring + disk so a late tab replays the finished card,
+        not the spinner; does NOT mint a new id (that would duplicate the card)."""
+        msg["id"] = mid
+        with self.ring_lock:
+            for i, m in enumerate(self.ring):
+                if m.get("id") == mid:
+                    self.ring[i] = msg
+                    break
+            else:
+                self.ring.append(msg)
+            self._rewrite_feed()
+        with self._subs_lock:
+            subs = list(self._subs)
+        for q in subs:
+            try:
+                q.put_nowait(msg)
+            except Exception:
+                pass
+
+    def _persist(self, msg):
+        try:
+            os.makedirs(os.path.dirname(self.feed_path), exist_ok=True)
+            with open(self.feed_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _rewrite_feed(self):
+        """Truncate-and-rewrite the JSONL from the in-memory ring. Called after a
+        trim/delete/clear so the file never drifts from what a fresh tab replays."""
+        try:
+            os.makedirs(os.path.dirname(self.feed_path), exist_ok=True)
+            tmp = self.feed_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for m in self.ring:
+                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
+            os.replace(tmp, self.feed_path)
+        except Exception:
+            pass
+
+    def delete(self, mid):
+        with self.ring_lock:
+            self.ring = [m for m in self.ring if m.get("id") != mid]
+            self._rewrite_feed()
+
+    def clear(self):
+        with self.ring_lock:
+            self.ring = []
+            try:
+                if os.path.exists(self.feed_path):
+                    os.remove(self.feed_path)
+            except Exception:
+                pass
+
+    def load_feed(self):
+        """Replay the last _RING_MAX records from disk into the ring on startup, so a
+        restart doesn't lose the session's narration history."""
+        try:
+            with open(self.feed_path, encoding="utf-8") as f:
+                rows = [json.loads(ln) for ln in f if ln.strip()]
+        except OSError:
+            return
+        except Exception:
+            return
+        rows = rows[-_RING_MAX:]
+        with self.ring_lock:
+            self.ring = rows
+            self._next_id = max((m.get("id", 0) for m in rows), default=0)
+
     def ring_copy(self):
-        return list(self.ring)
+        with self.ring_lock:
+            return list(self.ring)
 
     # -- store helpers --------------------------------------------------------
     def open_store(self):
@@ -167,15 +271,32 @@ def process_event(payload):
 
     if will_narrate:
         threading.Thread(target=_narrate_async,
-                         args=(payload, delta, new_findings), daemon=True).start()
+                         args=(payload, delta, new_findings, edited_node),
+                         daemon=True).start()
     # The auditor is a separate, heavier pass: only worth running when the system
     # graph actually shifted (a real code edit), where cross-component breakage lives.
     if do_rescan:
         threading.Thread(target=_audit_async,
-                         args=(payload, brief, delta, new_findings), daemon=True).start()
+                         args=(payload, brief, delta, new_findings, edited_node),
+                         daemon=True).start()
 
 
-def _narrate_async(payload, delta, new_findings):
+def _learn(node, key, value, source):
+    """Persist one piece of AI-learned knowledge onto a node (run-independent
+    node_meta) and tell the UI so the node's inspector gains an 'AI 已知' entry
+    without a page reload. No node (edit on a non-graph file) -> just skip."""
+    if not node or not value:
+        return
+    st = STATE.open_store()
+    try:
+        st.set_meta(node, key, value, git_rev=STATE.git_rev, source=source)
+        meta = st.get_meta(node)
+    finally:
+        st.close()
+    STATE.publish({"type": "node_meta", "node": node, "meta": meta})
+
+
+def _narrate_async(payload, delta, new_findings, edited_node=None):
     with STATE.story_lock:
         story_txt = "\n".join("  - %s" % s for s in STATE.story[-6:])
     try:
@@ -192,31 +313,61 @@ def _narrate_async(payload, delta, new_findings):
         if len(STATE.story) > 40:
             STATE.story = STATE.story[-40:]
     STATE.publish({"type": "narration", "text": text, "action": action})
+    # Don't let a read go to waste: sink the architect's reading onto the node so the
+    # graph gets richer each scan instead of re-reading cold (oracle reuses it later).
+    if text and not text.startswith("(narration error"):
+        _learn(edited_node, "reading", text, "architect")
 
 
-def _audit_async(payload, brief, delta, new_findings):
+def _audit_async(payload, brief, delta, new_findings, edited_node=None):
     try:
         risks = narrator.audit_change(STATE.qa_prov, payload, brief, delta,
                                       new_findings, lang=STATE.lang, intent=STATE.intent)
     except Exception as e:
         risks = "(audit error: %s)" % e
+    node = edited_node or graphview.locate(_relativize(
+        (payload.get("tool_input") or {}).get("file_path")))
     if not risks:
-        return  # NO_RISK / unavailable -> stay silent, no noise card
+        # NO_RISK -> no card, but a clean audit IS a positive memory: record that this
+        # node was checked and found sound at this rev. Only when the auditor actually
+        # ran -- with the chain unavailable, audit_change returns None without reading,
+        # so marking "audited_clean" would be a lie.
+        prov = STATE.qa_prov
+        if prov and getattr(prov, "available", False):
+            _learn(node, "audited_clean", STATE.git_rev or "checked", "auditor")
+        return
     STATE.publish({"type": "risk", "text": risks,
                    "action": narrator.describe_action(payload),
-                   "node": graphview.locate(_relativize(
-                       (payload.get("tool_input") or {}).get("file_path"))) })
+                   "node": node})
+    _learn(node, "risk", risks, "auditor")
 
 
 def handle_ask(question, lang):
+    """Stream one oracle turn: post a placeholder card immediately, forward each
+    file-read / thought as an answer_step so the dev sees the agent working (not a
+    blind spinner), then resolve the placeholder to the finished markdown answer.
+    Runs in its own thread (see do_POST /ask) so the HTTP request returns at once."""
+    lang = lang or STATE.lang
     st = STATE.open_store()
     try:
         summary = graphview.graph_summary(st) if st.current_run() is not None else {}
+        knowledge = st.all_meta()
     finally:
         st.close()
-    ans = narrator.answer(STATE.qa_prov, question, summary,
-                          STATE.event_log, lang=lang or STATE.lang, intent=STATE.intent)
-    STATE.publish({"type": "answer", "question": question, "text": ans})
+    placeholder = {"type": "answer_start", "question": question}
+    STATE.publish(placeholder)
+    qid = placeholder["id"]
+
+    def on_event(ev):
+        STATE.publish({"type": "answer_step", "qid": qid, "step": ev})
+
+    try:
+        ans = narrator.answer(STATE.qa_prov, question, summary, STATE.event_log,
+                              lang=lang, intent=STATE.intent, knowledge=knowledge,
+                              on_event=on_event, session=STATE.qa_session)
+    except Exception as e:
+        ans = "(ask error: %s)" % e
+    STATE.resolve(qid, {"type": "answer", "question": question, "text": ans})
     return ans
 
 
@@ -328,8 +479,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": False, "error": str(e)}, 200)
             return self._send_json({"ok": True})
         if path == "/ask":
-            ans = handle_ask(payload.get("question", ""), payload.get("lang"))
-            return self._send_json({"answer": ans})
+            # Fire-and-forget: the answer (placeholder -> steps -> final) is delivered
+            # entirely over SSE, so every tab sees the same stream and the POST returns
+            # instantly instead of blocking for the full read-and-reason latency.
+            q = (payload.get("question") or "").strip()
+            if q:
+                threading.Thread(target=handle_ask,
+                                 args=(q, payload.get("lang")), daemon=True).start()
+            return self._send_json({"ok": True})
+        if path == "/clear":
+            STATE.clear()
+            STATE.publish({"type": "control", "action": "clear"})
+            return self._send_json({"ok": True})
+        if path == "/delete":
+            mid = payload.get("id")
+            STATE.delete(mid)
+            STATE.publish({"type": "control", "action": "delete", "id": mid})
+            return self._send_json({"ok": True})
         if path == "/lang":
             STATE.lang = payload.get("lang") or STATE.lang
             return self._send_json({"ok": True, "lang": STATE.lang})
@@ -339,6 +505,8 @@ class Handler(BaseHTTPRequestHandler):
 def serve(cfg, port=8722, open_ui=True, lang="zh"):
     global STATE
     STATE = LiveState(cfg, lang=lang)
+    STATE.git_rev = _git_rev(cfg.project_root)
+    STATE.load_feed()        # replay prior session's feed so a restart isn't a blank slate
     STATE.prime_snapshot()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = "http://127.0.0.1:%d/" % port

@@ -40,10 +40,25 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     edges     INTEGER,
     note      TEXT
 );
+-- AI-derived "meta-knowledge" attached to a node by stable id (mod:path/x.py).
+-- Deliberately has NO run_id: nodes/edges are wiped & rebuilt every scan (only 2
+-- runs retained), so anything the architect/auditor learns while reading the real
+-- source must live OUTSIDE the run lifecycle to accumulate. This is the layer that
+-- makes the graph get richer over time instead of re-reading cold every change.
+CREATE TABLE IF NOT EXISTS node_meta (
+    node_id TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT,            -- str, or JSON for non-str values
+    git_rev TEXT,            -- repo rev when learned, for staleness judgement
+    ts      TEXT,
+    source  TEXT,            -- architect | auditor | oracle
+    PRIMARY KEY (node_id, key)
+);
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_src  ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst  ON edges(dst);
+CREATE INDEX IF NOT EXISTS idx_meta_node  ON node_meta(node_id);
 """
 
 
@@ -170,6 +185,41 @@ class GraphStore:
         prev_ids = {r["id"] for r in self.conn.execute(
             "SELECT id FROM nodes WHERE run_id=?", (prev,))}
         return cur_ids - prev_ids, prev_ids - cur_ids
+
+    # -- AI meta-knowledge (run-independent, accumulates across scans) ------
+    def set_meta(self, node_id, key, value, git_rev="", source=""):
+        """Attach/overwrite one piece of learned knowledge on a node. value may be
+        any JSON-serializable type; non-strings are stored as JSON."""
+        if not isinstance(value, str):
+            value = json.dumps(value, ensure_ascii=False)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO node_meta(node_id, key, value, git_rev, ts, source) "
+            "VALUES(?,?,?,?,?,?)",
+            (node_id, key, value, git_rev, time.strftime("%Y-%m-%dT%H:%M:%S"), source),
+        )
+        self.conn.commit()
+
+    def get_meta(self, node_id):
+        """{key: {value, git_rev, ts, source}} for one node (empty dict if none)."""
+        out = {}
+        for r in self.conn.execute(
+            "SELECT key, value, git_rev, ts, source FROM node_meta WHERE node_id=?",
+            (node_id,),
+        ):
+            out[r["key"]] = {"value": r["value"], "git_rev": r["git_rev"],
+                             "ts": r["ts"], "source": r["source"]}
+        return out
+
+    def all_meta(self):
+        """{node_id: {key: {value, git_rev, ts, source}}} across every node."""
+        out = {}
+        for r in self.conn.execute(
+            "SELECT node_id, key, value, git_rev, ts, source FROM node_meta"
+        ):
+            out.setdefault(r["node_id"], {})[r["key"]] = {
+                "value": r["value"], "git_rev": r["git_rev"],
+                "ts": r["ts"], "source": r["source"]}
+        return out
 
     def close(self):
         self.conn.close()

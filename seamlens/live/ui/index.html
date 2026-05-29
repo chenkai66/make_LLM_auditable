@@ -115,6 +115,30 @@
   #feed .empty{color:var(--dim2);text-align:center;margin-top:30px;font-size:12px}
   .card{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--line2);
     border-radius:9px;padding:9px 12px;animation:cardin .22s ease;position:relative}
+  /* per-card delete affordance */
+  .card .del{position:absolute;top:6px;right:8px;width:16px;height:16px;line-height:14px;
+    text-align:center;border-radius:5px;color:var(--dim2);cursor:pointer;font-size:14px;
+    opacity:0;transition:opacity .12s,background .12s}
+  .card:hover .del{opacity:1}
+  .card .del:hover{background:var(--hot);color:#fff}
+  /* live oracle reading trace */
+  .card .steps{display:flex;flex-direction:column;gap:3px;margin:4px 0 7px 0}
+  .card .steps:empty{display:none}
+  .card .steps.done{opacity:.55;font-size:10.5px}
+  .card .step{display:flex;gap:6px;font-size:11px;color:var(--dim);align-items:baseline;
+    animation:cardin .18s ease}
+  .card .step .si{flex:0 0 auto}
+  .card .step .st{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font:11px ui-monospace,Menlo,monospace}
+  /* AI-known meta block in the node inspector */
+  .sec.meta .mrow{margin-bottom:8px;background:var(--bg);border:1px solid var(--line);
+    border-radius:7px;padding:6px 8px}
+  .sec.meta .mhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px}
+  .sec.meta .mk{font-size:10.5px;font-weight:700;color:var(--accent)}
+  .sec.meta .mk.risk{color:var(--hot)}
+  .sec.meta .mts{font-size:9.5px;color:var(--dim2)}
+  .sec.meta .mbody{font-size:11.5px;line-height:1.45;color:var(--dim)}
+  .sec.meta .mrow.clean{display:flex;justify-content:space-between;color:#3fb950;font-size:11px}
   /* timeline rail dot */
   .card::before{content:"";position:absolute;left:-15px;top:14px;width:8px;height:8px;border-radius:50%;
     background:var(--line2);border:2px solid var(--bg2);box-shadow:0 0 0 3px var(--panel)}
@@ -238,6 +262,7 @@
       <span class="proj" id="proj"></span>
       <span class="badge" id="aibadge">AI ?</span>
       <span style="flex:1"></span>
+      <button class="btn" onclick="clearFeed()" title="清空所有记录">清空</button>
       <button class="btn" onclick="showMount()" title="如何挂载到 Claude Code">⚙ 挂载</button>
       <select id="lang"></select>
     </header>
@@ -541,14 +566,35 @@ function renderNodeInsp(n){
     `<div><b>${d.importers!=null?d.importers:'—'}</b>被引用</div>`+
     `<div><b>${out.length}</b>出边</div>`+
     `<div><b>${inc.length}</b>入边</div>`;
-  let body='';
+  let body=metaSection(d.meta);
   if(out.length){ body+='<div class="sec"><h4>依赖 / 出边</h4>'+edgeList(out,'target')+'</div>'; }
   if(inc.length){ body+='<div class="sec"><h4>被依赖 / 入边</h4>'+edgeList(inc,'source')+'</div>'; }
-  if(!out.length && !inc.length) body='<div class="desc">这是一个孤立节点，没有连接。</div>';
+  if(!out.length && !inc.length && !d.meta) body='<div class="desc">这是一个孤立节点，没有连接。</div>';
   document.getElementById('i-body').innerHTML=body;
   wireNbr();
   document.getElementById('i-focus').style.display='block';
   document.getElementById('insp').classList.add('show');
+}
+// The accumulated AI knowledge on a node (architect reading / auditor risk / clean
+// mark), persisted in node_meta and carried on the cytoscape node's data.meta. This
+// is what makes the graph get richer each scan instead of being re-read cold.
+function metaSection(meta){
+  if(!meta) return '';
+  const order=[['reading','架构师阅读'],['risk','审计风险'],['audited_clean','已审计·无风险']];
+  let rows='';
+  order.forEach(([k,label])=>{
+    const v=meta[k]; if(!v) return;
+    const ts=(v.ts||'').slice(0,16).replace('T',' ');
+    if(k==='audited_clean'){
+      rows+='<div class="mrow clean"><span class="mk">✓ '+label+'</span><span class="mts">'+esc(ts)+'</span></div>';
+    } else {
+      rows+='<div class="mrow"><div class="mhead"><span class="mk '+esc(k)+'">'+label+'</span>'+
+        '<span class="mts">'+esc(v.source||'')+' · '+esc(ts)+'</span></div>'+
+        '<div class="mbody md">'+md(v.value||'')+'</div></div>';
+    }
+  });
+  if(!rows) return '';
+  return '<div class="sec meta"><h4>AI 已知</h4>'+rows+'</div>';
 }
 function edgeList(edges,endKey){
   return edges.map(e=>{
@@ -602,9 +648,56 @@ function connect(){
 function dispatch(m){
   if(m.type==='graph_delta'){ onDelta(m); }
   else if(m.type==='narration'){ fillNarration(m.text); }
-  else if(m.type==='answer'){ addQA(m.question,m.text); }
+  else if(m.type==='answer_start'){ answerStart(m); }
+  else if(m.type==='answer_step'){ answerStep(m); }
+  else if(m.type==='answer'){ addQA(m); }
   else if(m.type==='intent'){ setGoal(m.text); }
   else if(m.type==='risk'){ addRisk(m); }
+  else if(m.type==='node_meta'){ onNodeMeta(m); }
+  else if(m.type==='control'){ onControl(m); }
+}
+// Tag a card with its server message id and add a × so a single record can be
+// deleted (synced to all tabs via POST /delete -> control broadcast).
+function decorate(card,id){
+  if(id!=null) card.dataset.mid=id;
+  const x=document.createElement('div'); x.className='del'; x.textContent='×';
+  x.title='删除这条记录';
+  x.onclick=(e)=>{ e.stopPropagation(); deleteCard(id, card); };
+  card.appendChild(x);
+  return card;
+}
+// Feed is chronological (oldest top, newest bottom); keep pinned to the latest
+// unless the dev has scrolled up to read history.
+function pushCard(card){
+  const feed=document.getElementById('feed');
+  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+  feed.appendChild(card);
+  if(atBottom) feed.scrollTop=feed.scrollHeight;
+}
+function deleteCard(id,card){
+  if(card&&card.parentNode) card.remove();
+  if(id==null) return;
+  fetch('/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id})}).catch(()=>{});
+}
+function clearFeed(){
+  document.getElementById('feed').innerHTML='';
+  fetch('/clear',{method:'POST'}).catch(()=>{});
+}
+function onControl(m){
+  if(m.action==='clear'){ document.getElementById('feed').innerHTML=''; }
+  else if(m.action==='delete'){
+    const c=document.querySelector('#feed .card[data-mid="'+m.id+'"]');
+    if(c) c.remove();
+  }
+}
+// A node's AI-learned meta changed (architect read it / auditor judged it). Update
+// the cached graph data so the inspector shows it, and refresh if it's open now.
+function onNodeMeta(m){
+  if(!cy||!m.node) return;
+  const n=cy.getElementById(m.node);
+  if(n.length){ n.data('meta', m.meta); }
+  if(SEL&&SEL.type==='node'&&SEL.id===m.node&&n.length) renderNodeInsp(n);
 }
 // The developer's standing GOAL, pinned so the whole feed reads against intent.
 function setGoal(text){
@@ -631,7 +724,8 @@ function addRisk(m){
   card.appendChild(head);
   const body=document.createElement('div'); body.className='narr md';
   body.innerHTML=md(txt); card.appendChild(body);
-  document.getElementById('feed').prepend(card);
+  decorate(card,m.id);
+  pushCard(card);
   linkNodes(body);
   if(m.node && cy){ const n=cy.getElementById(m.node);
     if(n.length){ n.addClass('edited'); } }
@@ -671,7 +765,8 @@ function onDelta(m){
     const nv=document.createElement('div'); nv.className='narr pending'; nv.textContent='正在生成讲解…';
     card.appendChild(nv);
   }
-  document.getElementById('feed').prepend(card);
+  decorate(card,m.id);
+  pushCard(card);
   if(cy) animate(m);
   // smart side-effects: stats, health, focus brain, re-index for prose linking
   const fn=document.getElementById('p-find-n'); fn.textContent=(parseInt(fn.textContent)||0)+sessFinds;
@@ -697,38 +792,67 @@ function animate(m){
   setTimeout(()=>{ cy.elements().removeClass('new-edge'); },4000);
 }
 function fillNarration(text){
-  // pair to the OLDEST still-pending card (feed is newest-first, so that's the last)
+  // pair to the OLDEST still-pending card (feed is now chronological, so oldest=first)
   const pend=document.querySelectorAll('#feed .narr.pending');
-  const n=pend.length?pend[pend.length-1]:null;
+  const n=pend.length?pend[0]:null;
   if(!n)return;
   n.className='narr md'; n.innerHTML=md(text); linkNodes(n);
 }
-function makeQA(q){
+// Find an existing QA card by its server id (the qid the answer stream carries),
+// so steps/answer for the same question always land on the same card across tabs.
+function qaCard(qid){
+  return document.querySelector('#feed .card.qa[data-mid="'+qid+'"]');
+}
+function makeQA(q,qid){
   clearEmpty();
   const card=document.createElement('div'); card.className='card qa';
-  card.innerHTML='<div class="q">问：'+esc(q)+'</div><div class="narr md ans pending">…</div>';
-  document.getElementById('feed').prepend(card);
+  card.innerHTML='<div class="q">问：'+esc(q)+'</div>'+
+    '<div class="steps"></div><div class="narr md ans pending">…</div>';
+  decorate(card,qid);
+  pushCard(card);
   return card;
 }
-function addQA(q,a){
-  // SSE broadcast of an answer. Idempotent: if a card for this question already
-  // exists (e.g. the asking tab already filled it from its own fetch), just refresh
-  // it instead of adding a duplicate; a tab that didn't ask gets a fresh card.
-  let card=[...document.querySelectorAll('#feed .card.qa')].find(c=>{
-    const ql=c.querySelector('.q'); return ql&&ql.textContent==='问：'+q;
-  });
-  if(!card) card=makeQA(q);
-  const ans=card.querySelector('.ans'); ans.className='narr md ans'; ans.innerHTML=md(a); linkNodes(ans);
+// Placeholder card for a question we just heard about over SSE -- the real-time
+// reading steps will stream into its .steps region before the final answer lands.
+function answerStart(m){
+  if(qaCard(m.id)) return;
+  makeQA(m.question||'', m.id);
 }
-async function ask(ev){
+// One streamed action from the oracle: a file it Read/Grep'd, or a thought. Shown
+// live so the dev watches it work the real source instead of a blind spinner.
+function answerStep(m){
+  const card=qaCard(m.qid); if(!card) return;
+  const steps=card.querySelector('.steps'); if(!steps) return;
+  const s=m.step||{}; const row=document.createElement('div'); row.className='step';
+  if(s.kind==='tool'){
+    const t=(s.tool||'').toLowerCase();
+    const icon=t==='read'?'📖':t==='grep'?'🔎':t==='glob'?'📁':'🔧';
+    row.innerHTML='<span class="si">'+icon+'</span><span class="st">'+
+      esc(s.tool||'')+' '+esc(short(s.target||''))+'</span>';
+  } else {
+    row.innerHTML='<span class="si">🤔</span><span class="st">'+esc((s.text||'').slice(0,160))+'</span>';
+  }
+  steps.appendChild(row);
+  const feed=document.getElementById('feed');
+  if(feed.scrollHeight-feed.scrollTop-feed.clientHeight<120) feed.scrollTop=feed.scrollHeight;
+}
+function addQA(m){
+  // Final answer over SSE. Resolve the placeholder (same id); if none exists in this
+  // tab (e.g. it joined late), make one. The steps region stays as a collapsed trace.
+  let card=qaCard(m.id);
+  if(!card) card=makeQA(m.question||'', m.id);
+  const steps=card.querySelector('.steps'); if(steps) steps.classList.add('done');
+  const ans=card.querySelector('.ans');
+  ans.className='narr md ans'; ans.innerHTML=md(m.text||''); linkNodes(ans);
+}
+function ask(ev){
   ev.preventDefault();
   const inp=document.getElementById('q'); const q=inp.value.trim(); if(!q)return false;
-  inp.value=''; const card=makeQA(q); const ans=card.querySelector('.ans');
-  try{
-    const r=await (await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({question:q,lang:LANG})})).json();
-    ans.className='narr md ans'; ans.innerHTML=md(r.answer); linkNodes(ans);
-  }catch(e){ ans.className='narr md ans'; ans.textContent='(请求失败)'; }
+  inp.value='';
+  // Fire-and-forget: the card, steps, and answer all arrive via SSE (same as every
+  // other tab), so we don't render here -- avoids a duplicate card.
+  fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({question:q,lang:LANG})}).catch(()=>{});
   return false;
 }
 

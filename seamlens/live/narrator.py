@@ -230,14 +230,20 @@ _ORACLE_SYS = (
     "GLOBAL wiring and behavior. You are given the developer's current GOAL, a SYSTEM-"
     "GRAPH SUMMARY (modules, data artifacts, and who writes/reads each -- where cross-"
     "component bugs live: producer/consumer mismatches, orphaned artifacts, divergent "
-    "constants) and the recent change history. Use the summary as your MAP, but "
-    "READ/GREP/GLOB the real source to verify specifics -- never guess at code you can "
-    "open. When the question touches a component, also state its BLAST RADIUS: what "
-    "else imports it / reads its outputs / shares its constants and would be affected. "
-    "Be concise and cite concrete module / file:line names. %s")
+    "constants), ACCUMULATED KNOWLEDGE (what earlier architect/auditor passes already "
+    "learned by reading the real source -- per-module readings, prior risks, clean-audit "
+    "marks) and the recent change history. Use the summary + accumulated knowledge as "
+    "your MAP so you don't re-read cold what is already known; but READ/GREP/GLOB the "
+    "real source to verify any specific you state -- never guess at code you can open, "
+    "and distrust accumulated knowledge that looks stale. When the question touches a "
+    "component, also state its BLAST RADIUS: what else imports it / reads its outputs / "
+    "shares its constants and would be affected. This is a CONTINUING conversation -- the "
+    "developer's earlier turns are in your session memory, so resolve follow-ups (\"yes\", "
+    "\"go on\") against them. Be concise and cite concrete module / file:line names. %s")
 
 
-def answer(provider, question, summary, recent_events, lang="zh", intent=None):
+def answer(provider, question, summary, recent_events, lang="zh", intent=None,
+           knowledge=None, on_event=None, session=None):
     if not (provider and provider.available):
         why = provider.explain_unavailable() if provider else "no chain"
         if lang == "zh":
@@ -246,14 +252,41 @@ def answer(provider, question, summary, recent_events, lang="zh", intent=None):
         return ("(CC chain not ready: %s. Install the Claude Code CLI (`claude`) or "
                 "set cc.enabled=true in seamlens.yaml.)" % why)
     recent = "\n".join("  - %s" % e for e in (recent_events or [])[-8:]) or "  (none yet)"
-    user = ("GOAL:\n  %s\n\nSYSTEM-GRAPH SUMMARY:\n%s\n\nRECENT CHANGES THIS SESSION:\n%s\n\n"
-            "QUESTION:\n%s\n" % (intent or "(not stated)", _fmt_summary(summary), recent, question))
-    out = provider.run(user, system=_ORACLE_SYS % lang_instruction(lang))
+    user = ("GOAL:\n  %s\n\nSYSTEM-GRAPH SUMMARY:\n%s\n\nACCUMULATED KNOWLEDGE:\n%s\n\n"
+            "RECENT CHANGES THIS SESSION:\n%s\n\nQUESTION:\n%s\n"
+            % (intent or "(not stated)", _fmt_summary(summary),
+               _fmt_knowledge(knowledge), recent, question))
+    out = provider.run(user, system=_ORACLE_SYS % lang_instruction(lang),
+                       on_event=on_event, session=session)
     if out:
         return out
     if lang == "zh":
         return "（CC 链调用失败：%s）" % (provider.last_error or "unknown")
     return "(CC chain failed: %s)" % (provider.last_error or "unknown")
+
+
+def _fmt_knowledge(km):
+    """Render accumulated node_meta ({node_id: {key: {value, source, ts, ...}}}) as
+    a compact per-node digest for the oracle. Capped so a long session can't blow
+    the prompt -- the oracle re-reads source to verify anyway."""
+    if not km:
+        return "  (nothing learned yet -- this is a cold read)"
+    lines = []
+    for nid in sorted(km)[:24]:
+        keys = km[nid]
+        parts = []
+        for k in ("reading", "risk", "audited_clean"):
+            v = keys.get(k)
+            if not v:
+                continue
+            txt = (v.get("value") or "").replace("\n", " ")
+            if k == "audited_clean":
+                parts.append("audited-clean@%s" % (v.get("ts") or "")[:10])
+            else:
+                parts.append("%s: %s" % (k, txt[:160]))
+        if parts:
+            lines.append("  %s -- %s" % (nid, " | ".join(parts)))
+    return "\n".join(lines) if lines else "  (nothing learned yet)"
 
 
 def _fmt_summary(st):

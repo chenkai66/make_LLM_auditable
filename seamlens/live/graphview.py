@@ -63,8 +63,17 @@ def _edge_element(e):
 
 
 def cytoscape_elements(store):
-    """Full current graph as {nodes:[...], edges:[...]} for the initial render."""
-    nodes = [_node_element(n) for n in store.nodes()]
+    """Full current graph as {nodes:[...], edges:[...]} for the initial render.
+    Each node carries any AI-learned meta (architect reading / auditor risk / clean
+    mark) so a freshly-loaded tab shows accumulated knowledge, not a cold graph."""
+    meta = store.all_meta()
+    nodes = []
+    for n in store.nodes():
+        el = _node_element(n)
+        m = meta.get(n["id"])
+        if m:
+            el["data"]["meta"] = m
+        nodes.append(el)
     seen = set()
     edges = []
     for e in store.edges():

@@ -21,9 +21,11 @@ Portability mirrors the ai: provider -- we name ENV VARS, never literal keys:
 Graceful degradation: if disabled or `claude` isn't on PATH, `available` is False
 and the caller falls back to deterministic template narration / an off message.
 """
+import json
 import os
 import shutil
 import subprocess
+import threading
 
 _DEFAULTS = {
     "enabled": True,
@@ -106,13 +108,28 @@ class CCChain:
             return env, True
         return env, False
 
-    def run(self, prompt, system=None, timeout=None):
+    def run(self, prompt, system=None, timeout=None, on_event=None, session=None):
         """Spawn `claude -p` in the watched project and return its text output, or
         None on any failure (recorded in last_error). The companion may read the
-        real source via its read-only tools before answering."""
+        real source via its read-only tools before answering.
+
+        Two modes:
+          * on_event is None  -- one-shot `--output-format text` (fast architect /
+            auditor background passes; behaviour unchanged).
+          * on_event given    -- live `--output-format stream-json --verbose`: each
+            tool_use / text block the agent emits is forwarded to on_event(dict) so
+            the UI can show the agent READING the real source instead of a blind
+            spinner. If `session` (a mutable dict) is passed, its `id` is used to
+            `--resume` the prior turn (real conversational memory) and updated with
+            the session id of this turn."""
         if not self.available:
             self.last_error = self.explain_unavailable()
             return None
+        if on_event is None:
+            return self._run_text(prompt, system, timeout)
+        return self._run_stream(prompt, system, timeout, on_event, session)
+
+    def _run_text(self, prompt, system, timeout):
         env, bare = self._env_and_bare()
         cmd = [self.bin, "-p", prompt, "--output-format", "text",
                "--allowed-tools", self.allowed_tools]
@@ -142,3 +159,112 @@ class CCChain:
             self.last_error = "empty output (stderr: %s)" % (proc.stderr or "").strip()[:200]
             return None
         return out
+
+    def _stream_cmd(self, prompt, system, bare, resume_id):
+        cmd = [self.bin, "-p", prompt, "--output-format", "stream-json", "--verbose",
+               "--allowed-tools", self.allowed_tools]
+        if self.model:
+            cmd += ["--model", self.model]
+        if system:
+            cmd += ["--append-system-prompt", system]
+        if resume_id:
+            cmd += ["--resume", resume_id]
+        if bare:
+            cmd += ["--bare"]
+        return cmd
+
+    def _run_stream(self, prompt, system, timeout, on_event, session):
+        env, bare = self._env_and_bare()
+        resume_id = (session or {}).get("id")
+        final, sid, status = self._spawn_stream(
+            self._stream_cmd(prompt, system, bare, resume_id), env, timeout, on_event)
+        # A failed --resume (e.g. session expired / CLI mismatch) is recoverable:
+        # drop the stale id and try once as a fresh conversation, so memory loss
+        # degrades to "no context for this one turn" rather than a hard error.
+        if status == "error" and resume_id:
+            if session is not None:
+                session["id"] = None
+            final, sid, status = self._spawn_stream(
+                self._stream_cmd(prompt, system, bare, None), env, timeout, on_event)
+        if sid and session is not None:
+            session["id"] = sid
+        return final
+
+    def _spawn_stream(self, cmd, env, timeout, on_event):
+        """Run a stream-json `claude -p`, forwarding each event to on_event.
+        Returns (final_text, session_id, status) with status in
+        {'ok','error','timeout'}."""
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=self.project_root, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        except Exception as e:
+            self.last_error = "%s: %s" % (type(e).__name__, e)
+            return None, None, "error"
+        killed = {"v": False}
+
+        def _kill():
+            killed["v"] = True
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+        timer = threading.Timer(timeout or self.timeout, _kill)
+        timer.start()
+        final, sid = None, None
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                t = ev.get("type")
+                if t == "system":
+                    if ev.get("session_id"):
+                        sid = ev["session_id"]
+                elif t == "assistant":
+                    for block in ((ev.get("message") or {}).get("content") or []):
+                        bt = block.get("type")
+                        if bt == "tool_use":
+                            inp = block.get("input") or {}
+                            tgt = (inp.get("file_path") or inp.get("pattern")
+                                   or inp.get("path") or inp.get("command") or "")
+                            self._emit(on_event, {"kind": "tool",
+                                                  "tool": block.get("name"),
+                                                  "target": str(tgt)[:200]})
+                        elif bt == "text" and (block.get("text") or "").strip():
+                            self._emit(on_event, {"kind": "text",
+                                                  "text": block["text"].strip()})
+                elif t == "result":
+                    if ev.get("result"):
+                        final = ev["result"]
+                    if ev.get("session_id"):
+                        sid = ev["session_id"]
+        finally:
+            timer.cancel()
+        rc = proc.wait()
+        if killed["v"]:
+            self.last_error = "claude -p timed out after %ss" % (timeout or self.timeout)
+            return (final.strip() if final else None), sid, "timeout"
+        if rc != 0:
+            err = ""
+            try:
+                err = (proc.stderr.read() or "").strip()[:300]
+            except Exception:
+                pass
+            self.last_error = "claude exited %s: %s" % (rc, err)
+            return (final.strip() if final else None), sid, "error"
+        if not final:
+            self.last_error = "empty stream output"
+            return None, sid, "error"
+        return final.strip(), sid, "ok"
+
+    def _emit(self, cb, payload):
+        try:
+            cb(payload)
+        except Exception:
+            pass
