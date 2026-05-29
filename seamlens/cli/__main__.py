@@ -254,6 +254,11 @@ def cmd_live(args):
     if args.install:
         _install.install(cfg.project_root, port=args.port)
         return 0
+    # One-click: starting the companion also (idempotently) wires the CC hooks into
+    # the watched project, so `seamlens live <project>` is the only command a new
+    # user/project needs -- install + scan + serve + open. --no-install opts out.
+    if not args.no_install:
+        _install.install(cfg.project_root, port=args.port)
     # always (re)scan at startup so the live baseline reflects the CURRENT tree --
     # otherwise the first edit's delta would include everything that changed since
     # an older scan, instead of just that edit.
@@ -305,6 +310,8 @@ def main(argv=None):
     s = sub.add_parser("live"); add_common(s)
     s.add_argument("--install", action="store_true",
                    help="write the CC hook config into .claude/settings.local.json, then exit")
+    s.add_argument("--no-install", action="store_true",
+                   help="skip the automatic idempotent hook install done at startup")
     s.add_argument("--port", type=int, default=8722)
     s.add_argument("--lang", default="zh", help="default narration language (zh/en/ja/...)")
     s.add_argument("--no-browser", action="store_true")

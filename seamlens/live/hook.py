@@ -18,7 +18,9 @@ _EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 _BASH_MUTATING = ("git ", "mv ", "rm ", "cp ", "mkdir", "touch", "make",
                   "npm ", "pnpm ", "yarn ", "pip ", "python -m build",
                   ">", ">>", "tee ", "sed -i", "go build", "cargo build")
-_PASS_EVENTS = {"UserPromptSubmit", "Stop"}
+# Stop is intentionally NOT forwarded: "agent finished" carries no graph change and
+# only produced empty "nothing happened" cards in the live feed.
+_PASS_EVENTS = {"UserPromptSubmit"}
 
 
 def _meaningful(payload):
@@ -35,6 +37,11 @@ def _meaningful(payload):
 
 
 def main():
+    # Drop events triggered by seamlens' own companion `claude -p` (it runs inside
+    # the watched project, which has these hooks installed). Otherwise the companion
+    # narrating a change would itself fire hooks -> narrate that -> loop forever.
+    if os.environ.get("SEAMLENS_LIVE_INTERNAL"):
+        return 0
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}

@@ -29,6 +29,38 @@
   select,.btn{background:var(--bg2);color:var(--txt);border:1px solid var(--line2);border-radius:7px;
     padding:5px 9px;font-size:12px;cursor:pointer}
   .btn:hover{border-color:var(--accent);color:#fff}
+  /* live-stats strip */
+  #statbar{display:flex;align-items:center;gap:7px;padding:7px 13px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#0f141b,var(--panel));overflow-x:auto;scrollbar-width:none}
+  #statbar::-webkit-scrollbar{display:none}
+  .pill{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);
+    background:var(--bg2);border:1px solid var(--line);border-radius:20px;padding:3px 10px;white-space:nowrap}
+  .pill b{color:var(--txt);font-weight:650;font-variant-numeric:tabular-nums}
+  .pill i{font-style:normal;font-size:10px;color:var(--dim2)}
+  .pill.health{gap:6px}
+  .pill.health .dot{width:8px;height:8px;border-radius:50%;background:var(--new);
+    box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:pulse 2.4s ease-out infinite}
+  .pill.health.warn .dot{background:var(--art);box-shadow:0 0 0 0 rgba(245,196,81,.6);animation:pulse 1.8s ease-out infinite}
+  .pill.health.err .dot{background:var(--hot);box-shadow:0 0 0 0 rgba(255,107,122,.7);animation:pulse 1.1s ease-out infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 currentColor}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  /* pinned GOAL (the dev's intent for the agent) */
+  #goal{display:none;align-items:flex-start;gap:8px;padding:9px 13px;border-bottom:1px solid var(--line);
+    background:linear-gradient(90deg,rgba(63,224,168,.10),transparent);font-size:12px}
+  #goal.show{display:flex}
+  #goal .glabel{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#06281d;
+    background:var(--entry);padding:2px 7px;border-radius:5px;flex:none;margin-top:1px}
+  #goal .gtext{flex:1;min-width:0;color:var(--txt);line-height:1.45;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  /* session brain */
+  #brain{padding:8px 13px;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim);
+    display:flex;align-items:center;gap:8px;background:var(--panel);min-height:34px;
+    transition:opacity .3s}
+  #brain.idle{opacity:.5}
+  #brain .blabel{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--entry);background:rgba(63,224,168,.12);padding:2px 7px;border-radius:5px;flex:none}
+  #brain .btext{flex:1;min-width:0;line-height:1.4}
+  #brain .btext b{color:var(--txt);font-weight:600}
+  #brain .nfx{color:var(--art);font-family:ui-monospace,Menlo,monospace}
   /* graph toolbar */
   #tools{position:absolute;left:12px;top:12px;display:flex;gap:6px;align-items:center;z-index:5}
   #tools input{background:rgba(13,17,23,.9);color:var(--txt);border:1px solid var(--line2);
@@ -79,14 +111,59 @@
   #insp .ibtn:hover{filter:brightness(1.08)}
   #insp .desc{font-size:12px;color:var(--dim);margin-bottom:9px}
   /* feed */
-  #feed{flex:1;overflow:auto;padding:11px;display:flex;flex-direction:column;gap:9px}
+  #feed{flex:1;overflow:auto;padding:11px 11px 11px 22px;display:flex;flex-direction:column;gap:9px;position:relative}
   #feed .empty{color:var(--dim2);text-align:center;margin-top:30px;font-size:12px}
-  .card{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-  .card .act{color:var(--dim);font-size:11px;margin-bottom:5px;word-break:break-all;font-family:ui-monospace,Menlo,monospace}
-  .card .narr{font-size:13px}
-  .card .narr.pending{color:var(--dim);font-style:italic}
-  .card.qa{border-color:#2d4b6e;background:#0c1620}
-  .card.qa .q{color:var(--mod);margin-bottom:6px;font-weight:600}
+  .card{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--line2);
+    border-radius:9px;padding:9px 12px;animation:cardin .22s ease;position:relative}
+  /* timeline rail dot */
+  .card::before{content:"";position:absolute;left:-15px;top:14px;width:8px;height:8px;border-radius:50%;
+    background:var(--line2);border:2px solid var(--bg2);box-shadow:0 0 0 3px var(--panel)}
+  .card.edit::before{background:var(--art)} .card.shell::before{background:#e6c07b}
+  .card.ask::before{background:var(--mod)} .card.qa::before{background:var(--accent)}
+  #feed::after{content:"";position:absolute;left:11px;top:14px;bottom:14px;width:2px;
+    background:linear-gradient(180deg,var(--line2),transparent);z-index:0}
+  /* clickable node refs inside prose */
+  .nodelink{cursor:pointer;color:var(--mod);background:rgba(88,166,255,.1);
+    border:1px solid rgba(88,166,255,.25);border-radius:5px;padding:0 5px;
+    font:11.5px ui-monospace,Menlo,monospace;white-space:nowrap;transition:all .12s}
+  .nodelink:hover{background:rgba(88,166,255,.22);border-color:var(--mod);color:#fff}
+  .nodelink::before{content:"◈";font-size:9px;margin-right:3px;opacity:.7}
+  @keyframes cardin{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+  .card.edit{border-left-color:var(--art)} .card.shell{border-left-color:#e6c07b}
+  .card.ask{border-left-color:var(--mod)} .card.qa{border-left-color:var(--accent);background:#0c1620}
+  /* risk / audit card -- the bug-hunt output, made prominent */
+  .card.risk{border-left-color:var(--hot);border-color:#5a2a30;background:#180f12}
+  .card.risk.warn{border-left-color:var(--art);border-color:#5a4a22;background:#16130c}
+  .card.risk::before{background:var(--hot)}
+  .card.risk.warn::before{background:var(--art)}
+  .card.risk .rhead{display:flex;align-items:center;gap:7px;margin-bottom:7px;font-size:11px;font-weight:700;
+    color:var(--hot);letter-spacing:.03em}
+  .card.risk.warn .rhead{color:var(--art)}
+  .card.risk .rhead .pulsedot{width:7px;height:7px;border-radius:50%;background:currentColor;
+    animation:pulse 1.2s ease-out infinite}
+  .sevtag{font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;text-transform:uppercase;margin-right:4px}
+  .sevtag.high{background:rgba(255,107,122,.2);color:var(--hot)}
+  .sevtag.med{background:rgba(245,196,81,.2);color:var(--art)}
+  .sevtag.low{background:rgba(139,148,158,.18);color:var(--dim)}
+  .card.risk .rttl{font-weight:700}
+  .card.risk .ract{margin-left:auto;font-weight:400;color:var(--dim);font-size:10px;
+    max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .card .act{display:flex;align-items:flex-start;gap:7px;font-size:11px;margin-bottom:6px}
+  .card .actx{flex:1;min-width:0;color:var(--dim);line-height:1.45;
+    font-family:ui-monospace,Menlo,monospace;word-break:break-all;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .chip{flex:none;font-size:9px;font-weight:700;letter-spacing:.05em;padding:2px 6px;border-radius:5px;
+    text-transform:uppercase;line-height:1.3;background:var(--line);color:var(--dim)}
+  .chip.edit{background:rgba(225,170,90,.16);color:var(--art)}
+  .chip.shell{background:rgba(230,192,123,.14);color:#e6c07b}
+  .chip.ask{background:rgba(88,166,255,.16);color:var(--mod)}
+  .card .narr{font-size:13px;line-height:1.5}
+  .card .narr.pending{color:var(--dim2);font-style:italic;position:relative;padding-left:16px}
+  .card .narr.pending::before{content:"";position:absolute;left:0;top:3px;width:9px;height:9px;
+    border:2px solid var(--line2);border-top-color:var(--accent);border-radius:50%;
+    animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .card.qa .q{color:var(--mod);margin-bottom:6px;font-weight:600;font-size:13px}
   .delta{margin-top:7px;font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace;
     border-top:1px dashed var(--line);padding-top:6px}
   .delta .add{color:var(--new)} .delta .rem{color:var(--hot)}
@@ -164,6 +241,19 @@
       <button class="btn" onclick="showMount()" title="如何挂载到 Claude Code">⚙ 挂载</button>
       <select id="lang"></select>
     </header>
+    <div id="statbar">
+      <span class="pill health" id="p-health" title="系统接缝健康度"><span class="dot"></span><span id="p-health-t">健康</span></span>
+      <span class="pill"><b id="p-mod">0</b><i>模块</i></span>
+      <span class="pill"><b id="p-art">0</b><i>artifact</i></span>
+      <span class="pill"><b id="p-edge">0</b><i>边</i></span>
+      <span class="pill" id="p-find" title="本会话新增的接缝问题"><b id="p-find-n">0</b><i>新问题</i></span>
+      <span class="pill" id="p-evt"><b id="p-evt-n">0</b><i>改动</i></span>
+    </div>
+    <div id="goal"><span class="glabel">目标</span><span class="gtext" id="goal-t"></span></div>
+    <div id="brain" class="idle">
+      <span class="blabel">焦点</span>
+      <span class="btext" id="brain-t">等待 Claude Code 开始改动…</span>
+    </div>
     <div id="feed"><div class="empty">等待 Claude Code 的改动…<br>编辑代码后，这里会实时讲解并在左侧高亮。</div></div>
     <form id="ask" onsubmit="return ask(event)">
       <input id="q" placeholder="问问这次改动…（例如：会引入孤儿 artifact 吗？）" autocomplete="off">
@@ -176,16 +266,17 @@
   <div class="box">
     <span class="close" onclick="hideMount()">×</span>
     <h2>挂载到 Claude Code</h2>
-    <div class="sub">让 seamlens live 监听某个项目的每次代码改动（写入该项目 <code>.claude/settings.json</code> 的 hooks，幂等）。</div>
+    <div class="sub">一条命令搞定：挂 hooks（幂等写入项目 <code>.claude/settings.local.json</code>）+ 扫描 + 起服务 + 开浏览器。</div>
     <ol>
-      <li>一次性挂载 hooks（把 <code>&lt;项目路径&gt;</code> 换成你的项目）：
-        <pre><span class="cp" onclick="cp(this)">复制</span><code id="cmd-install">python3 -m seamlens live --install &lt;项目路径&gt;</code></pre>
+      <li>装一次（任选其一）：
+        <pre><span class="cp" onclick="cp(this)">复制</span><code id="cmd-pip">pip install seamlens   # 或在仓库里 pip install -e .</code></pre>
       </li>
-      <li>启动 god-view（就是当前这个页面）：
-        <pre><span class="cp" onclick="cp(this)">复制</span><code id="cmd-run">python3 -m seamlens live &lt;项目路径&gt;</code></pre>
+      <li>一键启动 god-view（就是当前这个页面）：
+        <pre><span class="cp" onclick="cp(this)">复制</span><code id="cmd-run">seamlens live &lt;项目路径&gt;</code></pre>
       </li>
       <li>之后在该项目里用 Claude Code 编辑代码 —— 每次写文件都会触发 <code>PostToolUse</code> hook，把改动 POST 到本服务，左侧图实时联动、右侧生成讲解。</li>
     </ol>
+    <div class="sub" style="margin-top:10px">AI 大脑（架构师 / 审计 / 问答）需要 <code>claude</code> CLI 在 PATH 且已登录；否则自动降级为模板讲解，不影响图谱联动。</div>
     <div class="sub" id="modal-root" style="margin-top:14px;margin-bottom:0"></div>
   </div>
 </div>
@@ -201,6 +292,118 @@ function nodeColor(d){ return ROLE[d.role] || COLORS[d.group] || '#58a6ff'; }
 function short(id){ return (id||'').replace(/^mod:/,'').replace(/^artifact:/,'').replace(/^const:/,'').replace(/^state:/,''); }
 function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function md(t){ try{ return marked.parse(t||'',{breaks:true}); }catch(e){ return esc(t); } }
+function basename(p){ return (p||'').split('/').pop(); }
+
+// -- node-name index: lets us turn node names mentioned in prose into clickable
+//    chips that jump to the graph. Rebuilt whenever nodes change.
+let NODE_INDEX={}, NODE_RX=null;
+function rebuildNodeIndex(){
+  NODE_INDEX={}; const keys=[];
+  if(!cy){ NODE_RX=null; return; }
+  cy.nodes().forEach(n=>{
+    const id=n.id(); const s=short(n.data('name')||id);
+    [s, basename(s)].forEach(k=>{
+      if(k && k.length>=3 && !NODE_INDEX[k.toLowerCase()]){ NODE_INDEX[k.toLowerCase()]=id; keys.push(k); }
+    });
+  });
+  if(!keys.length){ NODE_RX=null; return; }
+  keys.sort((a,b)=>b.length-a.length);
+  const alts=keys.map(k=>k.replace(/[.*+?^${}()|[\]\\/]/g,'\\$&')).join('|');
+  try{ NODE_RX=new RegExp('(?<![\\w./])('+alts+')(?![\\w])','g'); }
+  catch(e){ NODE_RX=new RegExp('('+alts+')','g'); }
+}
+function linkNodes(rootEl){
+  if(!NODE_RX||!rootEl)return;
+  // 1) inline <code> (where the model usually puts file/node names): if the whole
+  //    chip is a known node, swap it for a clickable node-link. Skip <pre> blocks.
+  rootEl.querySelectorAll('code').forEach(code=>{
+    if(code.closest('pre'))return;
+    const id=NODE_INDEX[(code.textContent||'').trim().toLowerCase()];
+    if(!id)return;
+    const span=document.createElement('span'); span.className='nodelink';
+    span.textContent=code.textContent.trim(); span.dataset.id=id; span.onclick=()=>jumpNode(id);
+    code.replaceWith(span);
+  });
+  // 2) plain prose text: link bare mentions too. Skip links/code/pre.
+  const walker=document.createTreeWalker(rootEl,NodeFilter.SHOW_TEXT,null);
+  const todo=[];
+  while(walker.nextNode()){
+    const t=walker.currentNode; const p=t.parentNode;
+    if(!p)continue; const tag=p.nodeName;
+    if(tag==='A'||tag==='CODE'||tag==='PRE'||(p.classList&&p.classList.contains('nodelink')))continue;
+    NODE_RX.lastIndex=0;
+    if(NODE_RX.test(t.nodeValue)) todo.push(t);
+  }
+  todo.forEach(t=>{
+    NODE_RX.lastIndex=0;
+    const frag=document.createDocumentFragment(); let last=0; const s=t.nodeValue; let m;
+    while((m=NODE_RX.exec(s))){
+      const id=NODE_INDEX[m[1].toLowerCase()]; if(!id)continue;
+      if(m.index>last) frag.appendChild(document.createTextNode(s.slice(last,m.index)));
+      const span=document.createElement('span'); span.className='nodelink'; span.textContent=m[1];
+      span.dataset.id=id; span.onclick=()=>jumpNode(id);
+      frag.appendChild(span); last=m.index+m[1].length;
+    }
+    if(last<s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+    if(last>0) t.parentNode.replaceChild(frag,t);
+  });
+}
+function jumpNode(id){
+  if(!cy)return; const n=cy.getElementById(id); if(!n.length)return;
+  selectNode(n); cy.animate({center:{eles:n},zoom:Math.max(cy.zoom(),1.3)},{duration:380});
+}
+
+// -- live stats + health pulse ------------------------------------------------
+let RISK={error:0,warning:0,info:0};
+function updateStats(){
+  if(!cy)return;
+  document.getElementById('p-mod').textContent=cy.nodes('[group="module"]').length;
+  document.getElementById('p-art').textContent=cy.nodes('[group="artifact"]').length;
+  document.getElementById('p-edge').textContent=cy.edges().length;
+}
+function setHealth(){
+  const p=document.getElementById('p-health'), t=document.getElementById('p-health-t');
+  p.classList.remove('warn','err');
+  if(RISK.error>0){ p.classList.add('err'); t.textContent='有风险'; }
+  else if(RISK.warning>0){ p.classList.add('warn'); t.textContent='留意'; }
+  else t.textContent='健康';
+}
+
+// -- session brain: infer what the agent is doing from recent events ----------
+let EVENTS=[], BRAIN_TIMER=null;
+function brainUpdate(m){
+  const now=Date.now();
+  const edges=((m.delta||{}).added_edges||[]).length;
+  EVENTS.push({t:now, tool:m.tool, event:m.event,
+    file: m.edited_node? basename(short(m.edited_node)) : basename(actText(m)),
+    edges, ask:m.event==='UserPromptSubmit'});
+  EVENTS=EVENTS.filter(e=>now-e.t<120000);
+  const win=EVENTS.filter(e=>now-e.t<90000);
+  const edits=win.filter(e=>!e.ask&&e.tool&&e.tool!=='Bash');
+  const newEdges=win.reduce((s,e)=>s+(e.edges||0),0);
+  const b=document.getElementById('brain'), bt=document.getElementById('brain-t');
+  b.classList.remove('idle');
+  if(m.event==='UserPromptSubmit'){
+    bt.innerHTML='你向 Claude Code 提出了新需求，正在等待它动手…';
+  } else if(edits.length){
+    // most-touched file in window
+    const cnt={}; edits.forEach(e=>{ if(e.file) cnt[e.file]=(cnt[e.file]||0)+1; });
+    const top=Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0];
+    const files=Object.keys(cnt).length;
+    let s='正在改动 ';
+    s+= top? '<b>'+esc(top[0])+'</b>'+(files>1?(' 等 '+files+' 个文件'):' 周边'):'代码';
+    s+=' · '+edits.length+' 处编辑';
+    if(newEdges) s+=' · <span class="nfx">+'+newEdges+' 条接缝</span>';
+    bt.innerHTML=s;
+  } else if(m.tool==='Bash'){
+    bt.innerHTML='Claude Code 正在执行命令：<b>'+esc(basename(actText(m))||actText(m).slice(0,40))+'</b>';
+  } else {
+    bt.innerHTML='Claude Code 刚刚有一次改动。';
+  }
+  clearTimeout(BRAIN_TIMER);
+  BRAIN_TIMER=setTimeout(()=>{ b.classList.add('idle');
+    bt.innerHTML='Claude Code 空闲中 · 已记录 '+EVENTS.length+' 次最近改动'; },45000);
+}
 
 async function boot(){
   const cfg = await (await fetch('/config')).json();
@@ -221,6 +424,9 @@ async function boot(){
 
   const g = await (await fetch('/graph')).json();
   initGraph(g);
+  const f=(g.summary&&g.summary.findings)||{};
+  RISK={error:f.error||0,warning:f.warning||0,info:f.info||0};
+  updateStats(); setHealth();
   wireSearch();
   connect();
 }
@@ -240,7 +446,8 @@ function initGraph(g){
         'text-outline-color':'#0b0e14','text-outline-width':2,
         'border-width':1.5,'border-color':'#0b0e14',
         'transition-property':'opacity,width,height','transition-duration':'180ms'}},
-      {selector:'node[role="entrypoint"]',style:{'border-width':2,'border-color':'#9affd8'}},
+      {selector:'node[role="entrypoint"]',style:{'border-width':2,'border-color':'#9affd8',
+        'underlay-color':'#3fe0a8','underlay-opacity':0.2,'underlay-padding':7}},
       {selector:'node[role="dead"]',style:{'border-style':'dashed','border-color':'#586273','color':'#6e7781'}},
       {selector:'node[group="artifact"]',style:{'shape':'round-rectangle'}},
       {selector:'node[group="const"]',style:{'shape':'hexagon'}},
@@ -254,9 +461,11 @@ function initGraph(g){
       {selector:'edge.hl',style:{'width':2.4,'opacity':1}},
       {selector:'node.sel',style:{'border-width':3,'border-color':'#58a6ff','z-index':100}},
       {selector:'edge.sel',style:{'width':3.5,'line-color':'#58a6ff','target-arrow-color':'#58a6ff','opacity':1,'z-index':100,'label':'data(kind)','font-size':'9px','color':'#58a6ff','text-outline-color':'#0b0e14','text-outline-width':2}},
-      {selector:'.edited',style:{'border-width':4,'border-color':'#ff6b7a','z-index':110}},
+      {selector:'.edited',style:{'border-width':4,'border-color':'#ff6b7a','z-index':110,
+        'underlay-color':'#ff6b7a','underlay-opacity':0.28,'underlay-padding':10}},
       {selector:'.new-edge',style:{'width':3.5,'line-color':'#3fb950',
-        'target-arrow-color':'#3fb950','opacity':1,'z-index':110}},
+        'target-arrow-color':'#3fb950','opacity':1,'z-index':110,
+        'underlay-color':'#3fb950','underlay-opacity':0.22,'underlay-padding':3}},
       {selector:'.dim',style:{'opacity':0.1}},
     ],
     layout:layoutOpts(),
@@ -267,6 +476,7 @@ function initGraph(g){
   cy.on('tap',e=>{ if(e.target===cy) clearSel(); });
   cy.on('mouseover','node',e=>{ if(!SEL) hoverHL(e.target); });
   cy.on('mouseout','node',e=>{ if(!SEL) cy.elements().removeClass('dim hl'); });
+  rebuildNodeIndex();
 }
 
 function layoutOpts(){
@@ -389,28 +599,86 @@ function connect(){
   es.onmessage=(ev)=>{ let m; try{m=JSON.parse(ev.data)}catch(e){return} dispatch(m); };
   es.onerror=()=>{};
 }
-let pendingCard=null;
 function dispatch(m){
   if(m.type==='graph_delta'){ onDelta(m); }
   else if(m.type==='narration'){ fillNarration(m.text); }
   else if(m.type==='answer'){ addQA(m.question,m.text); }
+  else if(m.type==='intent'){ setGoal(m.text); }
+  else if(m.type==='risk'){ addRisk(m); }
+}
+// The developer's standing GOAL, pinned so the whole feed reads against intent.
+function setGoal(text){
+  if(!text)return;
+  const g=document.getElementById('goal'), t=document.getElementById('goal-t');
+  t.textContent=text; g.classList.add('show');
+}
+// A cross-component bug-audit card. Severity is parsed from the first [high|med|low]
+// tag the auditor emitted, which colours the whole card (high=hot, med/low=amber).
+function addRisk(m){
+  clearEmpty();
+  const txt=m.text||''; const ml=txt.toLowerCase();
+  let sev='med';
+  if(/\bhigh\b/.test(ml)) sev='high';
+  else if(/\blow\b/.test(ml)) sev='low';
+  const card=document.createElement('div');
+  card.className='card risk'+(sev==='high'?'':' warn');
+  const head=document.createElement('div'); head.className='rhead';
+  head.innerHTML='<span class="pulsedot"></span><span class="sevtag '+sev+'">'+
+    (sev==='high'?'高危':sev==='low'?'低危':'中危')+
+    '</span><span class="rttl">跨组件风险</span>';
+  if(m.action){ const a=document.createElement('span'); a.className='ract';
+    a.textContent=actText(m); head.appendChild(a); }
+  card.appendChild(head);
+  const body=document.createElement('div'); body.className='narr md';
+  body.innerHTML=md(txt); card.appendChild(body);
+  document.getElementById('feed').prepend(card);
+  linkNodes(body);
+  if(m.node && cy){ const n=cy.getElementById(m.node);
+    if(n.length){ n.addClass('edited'); } }
 }
 function clearEmpty(){ const e=document.querySelector('#feed .empty'); if(e)e.remove(); }
 
+function actKind(m){
+  if(m.event==='UserPromptSubmit') return ['ask','提问'];
+  if(m.tool==='Bash') return ['shell','命令'];
+  if(['Edit','MultiEdit','Write','NotebookEdit'].includes(m.tool)) return ['edit', m.tool==='Write'?'新建':'编辑'];
+  return ['', m.tool||'·'];
+}
+function actText(m){
+  let a=m.action||'';
+  a=a.replace(/^you asked:\s*/,'').replace(/^edited\s+/,'').replace(/^created\s+/,'')
+     .replace(/^ran shell:\s*/,'');
+  return a;
+}
 function onDelta(m){
   clearEmpty();
-  const card=document.createElement('div'); card.className='card';
-  card.innerHTML='<div class="act"></div><div class="narr pending">正在生成讲解…</div>';
-  card.querySelector('.act').textContent='▸ '+(m.action||'');
+  const [kc,kl]=actKind(m);
+  const card=document.createElement('div'); card.className='card'+(kc?' '+kc:'');
+  const act=document.createElement('div'); act.className='act';
+  act.innerHTML='<span class="chip '+esc(kc)+'">'+esc(kl)+'</span><span class="actx"></span>';
+  act.querySelector('.actx').textContent=actText(m);
+  card.appendChild(act);
   const d=m.delta||{};
   const bits=[];
   (d.added_edges||[]).slice(0,6).forEach(e=>bits.push('<span class="add">+ '+esc(e.data.kind)+' '+esc(short(e.data.source))+' → '+esc(short(e.data.target))+'</span>'));
   (d.removed_edges||[]).slice(0,4).forEach(e=>bits.push('<span class="rem">− '+esc(e.data.kind)+' '+esc(short(e.data.source))+' → '+esc(short(e.data.target))+'</span>'));
   if(bits.length){ const dv=document.createElement('div'); dv.className='delta'; dv.innerHTML=bits.join('<br>'); card.appendChild(dv); }
+  let sessFinds=0;
   (m.findings||[]).forEach(f=>{ const fv=document.createElement('div'); fv.className='find';
-    fv.innerHTML='<span class="'+esc(f.severity)+'">● ['+esc(f.severity)+'] '+esc(f.title)+'</span>'; card.appendChild(fv); });
-  document.getElementById('feed').prepend(card); pendingCard=card;
+    fv.innerHTML='<span class="'+esc(f.severity)+'">● ['+esc(f.severity)+'] '+esc(f.title)+'</span>'; card.appendChild(fv);
+    RISK[f.severity]=(RISK[f.severity]||0)+1; sessFinds++; });
+  if(m.narrate!==false){
+    const nv=document.createElement('div'); nv.className='narr pending'; nv.textContent='正在生成讲解…';
+    card.appendChild(nv);
+  }
+  document.getElementById('feed').prepend(card);
   if(cy) animate(m);
+  // smart side-effects: stats, health, focus brain, re-index for prose linking
+  const fn=document.getElementById('p-find-n'); fn.textContent=(parseInt(fn.textContent)||0)+sessFinds;
+  const en=document.getElementById('p-evt-n'); en.textContent=(parseInt(en.textContent)||0)+1;
+  if(sessFinds) setHealth();
+  rebuildNodeIndex(); updateStats();
+  brainUpdate(m);
 }
 function animate(m){
   cy.elements().removeClass('edited new-edge');
@@ -429,28 +697,38 @@ function animate(m){
   setTimeout(()=>{ cy.elements().removeClass('new-edge'); },4000);
 }
 function fillNarration(text){
-  const card=pendingCard || document.querySelector('#feed .card');
-  if(!card)return;
-  const n=card.querySelector('.narr'); if(n){ n.className='narr md'; n.innerHTML=md(text); }
-  pendingCard=null;
+  // pair to the OLDEST still-pending card (feed is newest-first, so that's the last)
+  const pend=document.querySelectorAll('#feed .narr.pending');
+  const n=pend.length?pend[pend.length-1]:null;
+  if(!n)return;
+  n.className='narr md'; n.innerHTML=md(text); linkNodes(n);
 }
-function addQA(q,a){
+function makeQA(q){
   clearEmpty();
   const card=document.createElement('div'); card.className='card qa';
-  card.innerHTML='<div class="q">问：'+esc(q)+'</div><div class="narr md ans"></div>';
-  card.querySelector('.ans').innerHTML=md(a);
+  card.innerHTML='<div class="q">问：'+esc(q)+'</div><div class="narr md ans pending">…</div>';
   document.getElementById('feed').prepend(card);
+  return card;
+}
+function addQA(q,a){
+  // SSE broadcast of an answer. Idempotent: if a card for this question already
+  // exists (e.g. the asking tab already filled it from its own fetch), just refresh
+  // it instead of adding a duplicate; a tab that didn't ask gets a fresh card.
+  let card=[...document.querySelectorAll('#feed .card.qa')].find(c=>{
+    const ql=c.querySelector('.q'); return ql&&ql.textContent==='问：'+q;
+  });
+  if(!card) card=makeQA(q);
+  const ans=card.querySelector('.ans'); ans.className='narr md ans'; ans.innerHTML=md(a); linkNodes(ans);
 }
 async function ask(ev){
   ev.preventDefault();
   const inp=document.getElementById('q'); const q=inp.value.trim(); if(!q)return false;
-  inp.value=''; addQA(q,'…');
-  const top=document.querySelector('#feed .card.qa .ans');
+  inp.value=''; const card=makeQA(q); const ans=card.querySelector('.ans');
   try{
     const r=await (await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({question:q,lang:LANG})})).json();
-    if(top)top.innerHTML=md(r.answer);
-  }catch(e){ if(top)top.textContent='(请求失败)'; }
+    ans.className='narr md ans'; ans.innerHTML=md(r.answer); linkNodes(ans);
+  }catch(e){ ans.className='narr md ans'; ans.textContent='(请求失败)'; }
   return false;
 }
 

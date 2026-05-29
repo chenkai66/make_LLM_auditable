@@ -42,6 +42,9 @@ class LiveState:
         self.prev_finding_keys = set()
         self.narrate_prov, self.qa_prov = narrator.build_providers(cfg)
         self.event_log = []   # short human strings for Q&A context
+        self.intent = None    # latest UserPromptSubmit -- the dev's GOAL for the agent
+        self.story = []        # running architect summaries, fed back for continuity
+        self.story_lock = threading.Lock()  # _narrate_async runs in N daemon threads
 
     # -- pub/sub --------------------------------------------------------------
     def subscribe(self):
@@ -106,6 +109,15 @@ def process_event(payload):
     delta = {}
     edited_node = None
     new_findings = []
+    brief = {}
+
+    # A new prompt = the dev restating what they want the agent to build. Capture it
+    # as the GOAL so architect/auditor/oracle can frame everything against intent.
+    if evname == "UserPromptSubmit":
+        p = (payload.get("prompt") or "").strip()
+        if p:
+            STATE.intent = p[:600]
+            STATE.publish({"type": "intent", "text": STATE.intent})
 
     with STATE.lock:
         edited_rel = None
@@ -122,12 +134,20 @@ def process_event(payload):
                 delta = graphview.diff(STATE.prev_snapshot, after, st)
                 STATE.prev_snapshot = after
                 findings = rescan.lint(STATE.cfg)
+                brief = graphview.change_brief(st, edited_node)
             finally:
                 st.close()
             keys_now = {_finding_key(f) for f in findings}
             added_keys = keys_now - STATE.prev_finding_keys
             STATE.prev_finding_keys = keys_now
             new_findings = [f for f in findings if _finding_key(f) in added_keys]
+
+    # Is there anything worth narrating? A structural delta, a new finding, or an
+    # actual file/shell mutation. Pure prompt-submit with no change gets a card but
+    # no "nothing changed" narration (that prose is just noise).
+    has_delta = bool(delta and (delta.get("added_edges") or delta.get("removed_edges")
+                                or delta.get("added_nodes") or delta.get("removed_nodes")))
+    will_narrate = bool(has_delta or new_findings or tool in _EDIT_TOOLS or tool == "Bash")
 
     STATE.event_log.append(action_desc)
     STATE.publish({
@@ -137,6 +157,7 @@ def process_event(payload):
         "delta": delta,
         "tool": tool,
         "event": evname,
+        "narrate": will_narrate,
         "findings": [
             {"severity": f.severity, "title": f.title,
              "where": list(getattr(f, "where", []))[:3]}
@@ -144,19 +165,47 @@ def process_event(payload):
         ],
     })
 
-    # async narration -- skip pure prompt-submit/stop unless there was a change
-    threading.Thread(target=_narrate_async,
-                     args=(payload, delta, new_findings), daemon=True).start()
+    if will_narrate:
+        threading.Thread(target=_narrate_async,
+                         args=(payload, delta, new_findings), daemon=True).start()
+    # The auditor is a separate, heavier pass: only worth running when the system
+    # graph actually shifted (a real code edit), where cross-component breakage lives.
+    if do_rescan:
+        threading.Thread(target=_audit_async,
+                         args=(payload, brief, delta, new_findings), daemon=True).start()
 
 
 def _narrate_async(payload, delta, new_findings):
+    with STATE.story_lock:
+        story_txt = "\n".join("  - %s" % s for s in STATE.story[-6:])
     try:
         text = narrator.narrate_change(STATE.narrate_prov, payload, delta,
-                                       new_findings, lang=STATE.lang)
+                                       new_findings, lang=STATE.lang,
+                                       intent=STATE.intent, story=story_txt or None)
     except Exception as e:
         text = "(narration error: %s)" % e
-    STATE.publish({"type": "narration", "text": text,
-                   "action": narrator.describe_action(payload)})
+    action = narrator.describe_action(payload)
+    # Feed the architect's own reading back into the story so the next narration has
+    # continuity ("grasp the global logic as it evolves") rather than isolated blurbs.
+    with STATE.story_lock:
+        STATE.story.append("%s -> %s" % (action, (text or "").replace("\n", " ")[:200]))
+        if len(STATE.story) > 40:
+            STATE.story = STATE.story[-40:]
+    STATE.publish({"type": "narration", "text": text, "action": action})
+
+
+def _audit_async(payload, brief, delta, new_findings):
+    try:
+        risks = narrator.audit_change(STATE.qa_prov, payload, brief, delta,
+                                      new_findings, lang=STATE.lang, intent=STATE.intent)
+    except Exception as e:
+        risks = "(audit error: %s)" % e
+    if not risks:
+        return  # NO_RISK / unavailable -> stay silent, no noise card
+    STATE.publish({"type": "risk", "text": risks,
+                   "action": narrator.describe_action(payload),
+                   "node": graphview.locate(_relativize(
+                       (payload.get("tool_input") or {}).get("file_path"))) })
 
 
 def handle_ask(question, lang):
@@ -166,7 +215,7 @@ def handle_ask(question, lang):
     finally:
         st.close()
     ans = narrator.answer(STATE.qa_prov, question, summary,
-                          STATE.event_log, lang=lang or STATE.lang)
+                          STATE.event_log, lang=lang or STATE.lang, intent=STATE.intent)
     STATE.publish({"type": "answer", "question": question, "text": ans})
     return ans
 

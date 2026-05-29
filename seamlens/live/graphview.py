@@ -136,3 +136,70 @@ def neighborhood(store, node_id, depth=1):
 def graph_summary(store):
     """Compact dict the narrator/Q&A use as grounding context. Reuses atlas."""
     return atlas.stats(store, [])
+
+
+def _name_of(store, node_id, _cache={}):
+    """Best-effort display name for a node id (falls back to the id)."""
+    key = id(store)
+    idx = _cache.get(key)
+    if idx is None or idx.get("_run") != store.current_run():
+        idx = {"_run": store.current_run()}
+        for n in store.nodes():
+            idx[n["id"]] = n.get("name") or n["id"]
+        _cache.clear()
+        _cache[key] = idx
+    return idx.get(node_id, node_id)
+
+
+def change_brief(store, node_id):
+    """The ripple map for an edited module: who depends on it and the data
+    contracts it sits on. This is what lets the auditor reason about cross-
+    component breakage instead of only the local diff.
+
+    Returns a dict:
+      imports_out   modules this module imports (its own deps)
+      imported_by   modules that import THIS module  (break if its interface changed)
+      writes        artifacts this module produces, each with `also_read_by`
+      reads         artifacts this module consumes,  each with `also_written_by`
+      constants     config constants this module relates to
+    """
+    if not node_id:
+        return {}
+    writers = {}   # artifact -> set(modules that write it)
+    readers = {}   # artifact -> set(modules that read it)
+    imports_out, imported_by, consts = set(), set(), set()
+    mine_writes, mine_reads = set(), set()
+    for e in store.edges():
+        k, s, d = e["kind"], e["src"], e["dst"]
+        if k == "writes":
+            writers.setdefault(d, set()).add(s)
+            if s == node_id:
+                mine_writes.add(d)
+        elif k == "reads":
+            readers.setdefault(d, set()).add(s)
+            if s == node_id:
+                mine_reads.add(d)
+        elif k == "imports":
+            if s == node_id:
+                imports_out.add(d)
+            if d == node_id:
+                imported_by.add(s)
+        elif k in ("uses_const", "defines_const", "reads_const"):
+            if s == node_id or d == node_id:
+                consts.add(d if s == node_id else s)
+
+    def nm(x):
+        return _name_of(store, x)
+
+    return {
+        "node": nm(node_id),
+        "imports_out": sorted(nm(x) for x in imports_out),
+        "imported_by": sorted(nm(x) for x in imported_by),
+        "writes": [{"artifact": nm(a),
+                    "also_read_by": sorted(nm(m) for m in (readers.get(a, set())) if m != node_id)}
+                   for a in sorted(mine_writes)],
+        "reads": [{"artifact": nm(a),
+                   "also_written_by": sorted(nm(m) for m in (writers.get(a, set())) if m != node_id)}
+                  for a in sorted(mine_reads)],
+        "constants": sorted(nm(x) for x in consts),
+    }

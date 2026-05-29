@@ -1,19 +1,24 @@
 """Live narration + Q&A over the system graph.
 
-Wraps the existing seamlens.ai.provider.Provider (config-driven, key-free, graceful
-degradation). Two jobs with different latency budgets:
+Backed by a Claude Code *chain* (seamlens.live.cc_chain.CCChain), not a raw LLM HTTP
+call: each narration/answer spawns a real `claude -p` instance whose cwd is the
+watched project, so it can READ the actual source + system graph to ground its reply
+-- "restart a Claude Code beside you to read along". Same CC integration the rest of
+the ecosystem uses. Two jobs with different latency budgets:
 
-  * narrate_change -- fires on every meaningful tool action, so it wants a FAST
-    model (default qwen3.6-flash). The graph delta animates instantly without the
-    LLM; this prose streams into the card a few seconds later.
-  * answer -- the human asked a question and expects a considered reply, so it can
-    use the heavier configured model (e.g. qwen3.7-max).
+  * narrate_change -- fires on every meaningful tool action, so it gets a tight
+    timeout (and an optional faster cc.narrate_model). The graph delta animates
+    instantly without the chain; this prose streams into the card a few seconds later.
+  * answer -- the human asked a question and expects a considered reply, so it gets
+    the heavier model + a longer timeout, and is encouraged to read the real files.
 
-If the provider is disabled/unavailable the narrator falls back to a deterministic
-template so the demo never hard-fails (mirrors atlas.narrate returning None, but
-here we always return *something* human-readable).
+If the chain is disabled/unavailable (e.g. `claude` not on PATH) the narrator falls
+back to a deterministic template (narration) or an off message (Q&A), so the live
+view never hard-fails.
 """
-from seamlens.ai.provider import Provider
+import re
+
+from seamlens.live.cc_chain import CCChain
 
 # language code -> how we name it to the model. Order also drives the UI dropdown.
 LANGUAGES = [
@@ -39,16 +44,11 @@ def lang_instruction(lang):
 
 
 def build_providers(cfg):
-    """(narrate_provider, qa_provider). Both share creds/base_url from the ai:
-    config; narration overrides to a fast model + tight budget."""
-    qa = Provider.from_config(cfg)
-    ai = dict((cfg.get("ai") or {}))
-    fast_model = ai.get("narrate_model") or "qwen3.6-flash"
-    narrate = Provider(qa.base_url, qa.api_key, fast_model,
-                       max_tokens=ai.get("narrate_max_tokens", 300),
-                       temperature=0.3,
-                       timeout=ai.get("narrate_timeout", 30))
-    narrate.enabled = getattr(qa, "enabled", False)
+    """(narrate_chain, qa_chain). Both spawn `claude -p` in the watched project;
+    narration gets the tighter timeout (+ optional faster cc.narrate_model), Q&A
+    gets the longer budget. See cc_chain.CCChain for auth/portability."""
+    narrate = CCChain.from_config(cfg, kind="narrate")
+    qa = CCChain.from_config(cfg, kind="qa")
     return narrate, qa
 
 
@@ -87,26 +87,112 @@ def _delta_text(delta):
     return "\n".join(parts) if parts else "no new edges or nodes"
 
 
-_NARRATE_SYS = (
-    "You are an always-on companion sitting beside a developer who is watching an "
-    "AI coding agent (Claude Code) edit their codebase. You are given the agent's "
-    "latest action and the exact change it caused in the project's SYSTEM GRAPH "
-    "(modules, data artifacts, and which module writes/reads each). Explain, in 1-3 "
-    "short sentences, what just changed and why it matters for the system's wiring "
-    "-- especially any new producer/consumer coupling or risky seam. Be concrete and "
-    "use the node names given. Do not invent facts beyond the graph delta. %s")
+_ARCHITECT_SYS = (
+    "You are a senior software architect sitting beside a developer who is watching "
+    "an AI coding agent (Claude Code) build their codebase in real time. Your cwd IS "
+    "that project -- Read any file to ground yourself. The developer's hard problem is "
+    "keeping a MENTAL MODEL of the whole system while the agent changes it under them.\n"
+    "You are given: the developer's current GOAL (what they asked the agent to do), the "
+    "agent's latest ACTION, the exact SYSTEM-GRAPH DELTA it caused (modules, data "
+    "artifacts, and who writes/reads each), and the STORY SO FAR.\n"
+    "In 1-3 sentences, explain how this change ADVANCES THE GOAL and how it RESHAPES "
+    "the system's wiring -- name the concrete modules/artifacts and call out any NEW "
+    "producer->consumer coupling or cross-subsystem dependency it creates. Speak at the "
+    "level of components and data flow, not lines of code. If the change appears to "
+    "DRIFT from the stated goal, say so plainly. Be concrete, use the node names, never "
+    "dump file contents. %s")
 
 
-def narrate_change(provider, event, delta, findings, lang="zh"):
+def narrate_change(provider, event, delta, findings, lang="zh", intent=None, story=None):
     action = describe_action(event)
     delta_txt = _delta_text(delta)
-    if not (provider and getattr(provider, "enabled", False) and provider.available):
+    if not (provider and provider.available):
         return _template_narration(action, delta, lang)
     find_txt = "\n".join("  [%s] %s" % (f.severity, f.title) for f in (findings or [])[:6]) or "  (none new)"
-    user = ("AGENT ACTION:\n  %s\n\nSYSTEM-GRAPH DELTA:\n%s\n\nNEW SEAM FINDINGS:\n%s\n"
-            % (action, delta_txt, find_txt))
-    out = provider.complete(_NARRATE_SYS % lang_instruction(lang), user)
+    user = ("GOAL (what the developer asked for):\n  %s\n\n"
+            "STORY SO FAR:\n%s\n\n"
+            "AGENT ACTION:\n  %s\n\nSYSTEM-GRAPH DELTA:\n%s\n\nNEW SEAM FINDINGS:\n%s\n"
+            % (intent or "(not stated yet)",
+               story or "  (this is the first tracked change)",
+               action, delta_txt, find_txt))
+    out = provider.run(user, system=_ARCHITECT_SYS % lang_instruction(lang))
     return out or _template_narration(action, delta, lang)
+
+
+_AUDITOR_SYS = (
+    "You are a paranoid systems auditor sitting beside a developer, watching an AI "
+    "coding agent edit their codebase. Your cwd IS that project -- you MUST Read/Grep "
+    "the real source to VERIFY before you claim a bug; never speculate about code you "
+    "can open. Your single job: find the most likely REAL bug or regression THIS change "
+    "introduces ACROSS THE WHOLE SYSTEM -- the cross-component kind that hides in the "
+    "seams and that a local diff review misses.\n"
+    "You are given the GOAL, the ACTION, a CHANGE-IMPACT BRIEF (the edited module's "
+    "graph neighborhood: who imports it, the artifacts it reads/writes and who else "
+    "produces/consumes them, related constants), and any new linter findings.\n"
+    "Hunt specifically for: (1) CONTRACT DRIFT -- the change altered a function "
+    "signature / return shape / artifact format / schema, but a CONSUMER in the brief "
+    "still expects the old shape; (2) STALE CALLER -- a name/path/signature changed but "
+    "an importer was not updated; (3) PRODUCER/CONSUMER MISMATCH -- an artifact written "
+    "but never read, or read before it is written; (4) DIVERGENT CONSTANT -- the same "
+    "config value defined differently in two places; (5) RIPPLE -- walk each "
+    "imported_by / also_read_by / also_written_by entry in the brief and check it still "
+    "holds after this change.\n"
+    "VERIFY by reading the actual files named in the brief. Output ONLY real, specific "
+    "risks, ranked, each on its own line as:\n"
+    "`**[high|med|low]** <one-line risk> -- <file:line> -- <why it breaks>`\n"
+    "If, after reading, you find no real cross-component risk, reply with EXACTLY this "
+    "and nothing else: NO_RISK. Never pad with generic advice or restate the change. %s")
+
+
+def format_brief(brief):
+    """Render a change_brief dict (graphview.change_brief) for the auditor prompt."""
+    if not brief:
+        return "  (no graph neighborhood -- the edited file is not a graph node yet)"
+    lines = ["  edited module: %s" % brief.get("node", "?")]
+    if brief.get("imported_by"):
+        lines.append("  imported by (break if its interface changed): %s"
+                     % ", ".join(brief["imported_by"][:12]))
+    if brief.get("imports_out"):
+        lines.append("  imports: %s" % ", ".join(brief["imports_out"][:12]))
+    for w in brief.get("writes", [])[:8]:
+        also = w["also_read_by"]
+        lines.append("  WRITES artifact `%s`%s" % (
+            w["artifact"],
+            (" -- also read by: " + ", ".join(also[:8])) if also else " -- (no other reader: possible orphan)"))
+    for r in brief.get("reads", [])[:8]:
+        also = r["also_written_by"]
+        lines.append("  READS artifact `%s`%s" % (
+            r["artifact"],
+            (" -- written by: " + ", ".join(also[:8])) if also else " -- (no writer: possible read-before-write)"))
+    if brief.get("constants"):
+        lines.append("  related constants: %s" % ", ".join(brief["constants"][:12]))
+    return "\n".join(lines)
+
+
+def audit_change(provider, event, brief, delta, findings, lang="zh", intent=None):
+    """The bug-hunt pass. Returns auditor prose (ranked risks) or None when it
+    finds nothing real / the chain is unavailable -- caller drops empty audits."""
+    if not (provider and provider.available):
+        return None
+    action = describe_action(event)
+    find_txt = "\n".join("  [%s] %s" % (f.severity, f.title) for f in (findings or [])[:8]) or "  (none new)"
+    user = ("GOAL:\n  %s\n\nAGENT ACTION:\n  %s\n\nCHANGE-IMPACT BRIEF:\n%s\n\n"
+            "SYSTEM-GRAPH DELTA:\n%s\n\nNEW LINTER FINDINGS:\n%s\n"
+            % (intent or "(not stated)", action, format_brief(brief),
+               _delta_text(delta), find_txt))
+    out = provider.run(user, system=_AUDITOR_SYS % lang_instruction(lang))
+    if not out:
+        return None
+    t = out.strip()
+    # The auditor is told to reply EXACTLY "NO_RISK" when it finds nothing, but models
+    # often narrate their verification first and only append NO_RISK at the end. Treat
+    # any NO_RISK token -- or any output with no ranked [high|med|low] severity tag --
+    # as "nothing to surface", so a clean audit never leaks a noise card into the feed.
+    if "NO_RISK" in t.upper():
+        return None
+    if not re.search(r"\[(high|med|low)\]", t, re.I):
+        return None
+    return t
 
 
 def _template_narration(action, delta, lang):
@@ -138,31 +224,36 @@ def _zh_action(action):
             .replace("you asked: ", "你提问：")) if action else "执行了一个操作"
 
 
-_QA_SYS = (
-    "You are the god-view companion for a codebase. Answer the developer's question "
-    "ONLY from the system-graph facts and recent change history provided. The graph "
-    "captures modules, data artifacts, and which module writes/reads each -- this is "
-    "where cross-component bugs live (producer/consumer mismatches, orphaned "
-    "artifacts, divergent constants). If the facts don't cover the question, say so "
-    "rather than guessing. Be concise. %s")
+_ORACLE_SYS = (
+    "You are the god-view oracle for a codebase, running as a Claude Code chain whose "
+    "cwd IS the project under review. Answer the developer's question about the system's "
+    "GLOBAL wiring and behavior. You are given the developer's current GOAL, a SYSTEM-"
+    "GRAPH SUMMARY (modules, data artifacts, and who writes/reads each -- where cross-"
+    "component bugs live: producer/consumer mismatches, orphaned artifacts, divergent "
+    "constants) and the recent change history. Use the summary as your MAP, but "
+    "READ/GREP/GLOB the real source to verify specifics -- never guess at code you can "
+    "open. When the question touches a component, also state its BLAST RADIUS: what "
+    "else imports it / reads its outputs / shares its constants and would be affected. "
+    "Be concise and cite concrete module / file:line names. %s")
 
 
-def answer(provider, question, summary, recent_events, lang="zh"):
-    if not (provider and getattr(provider, "enabled", False) and provider.available):
+def answer(provider, question, summary, recent_events, lang="zh", intent=None):
+    if not (provider and provider.available):
+        why = provider.explain_unavailable() if provider else "no chain"
         if lang == "zh":
-            return ("（AI 未启用：请在 seamlens.yaml 的 ai.enabled 设为 true 并配置 "
-                    "SEAMLENS_AI_BASE_URL / SEAMLENS_AI_KEY 环境变量后重试。）")
-        return ("(AI is off: set ai.enabled=true in seamlens.yaml and export "
-                "SEAMLENS_AI_BASE_URL / SEAMLENS_AI_KEY, then retry.)")
+            return ("（CC 链未就绪：%s。请确保 Claude Code CLI（`claude`）已安装且可用，"
+                    "或在 seamlens.yaml 设置 cc.enabled=true。）" % why)
+        return ("(CC chain not ready: %s. Install the Claude Code CLI (`claude`) or "
+                "set cc.enabled=true in seamlens.yaml.)" % why)
     recent = "\n".join("  - %s" % e for e in (recent_events or [])[-8:]) or "  (none yet)"
-    user = ("SYSTEM-GRAPH SUMMARY:\n%s\n\nRECENT CHANGES THIS SESSION:\n%s\n\n"
-            "QUESTION:\n%s\n" % (_fmt_summary(summary), recent, question))
-    out = provider.complete(_QA_SYS % lang_instruction(lang), user)
+    user = ("GOAL:\n  %s\n\nSYSTEM-GRAPH SUMMARY:\n%s\n\nRECENT CHANGES THIS SESSION:\n%s\n\n"
+            "QUESTION:\n%s\n" % (intent or "(not stated)", _fmt_summary(summary), recent, question))
+    out = provider.run(user, system=_ORACLE_SYS % lang_instruction(lang))
     if out:
         return out
     if lang == "zh":
-        return "（调用失败：%s）" % (provider.last_error or "unknown")
-    return "(request failed: %s)" % (provider.last_error or "unknown")
+        return "（CC 链调用失败：%s）" % (provider.last_error or "unknown")
+    return "(CC chain failed: %s)" % (provider.last_error or "unknown")
 
 
 def _fmt_summary(st):

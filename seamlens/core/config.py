@@ -61,6 +61,26 @@ DEFAULTS = {
         "temperature": 0.2,
         "timeout": 60,
     },
+    # Live companion narration/Q&A backend. Instead of a raw LLM HTTP call this
+    # launches a real Claude Code chain (`claude -p`) whose cwd is the WATCHED
+    # project, so it actually READS the code + system graph to answer -- "restart
+    # a Claude Code beside you to read along". Same integration the rest of the
+    # ecosystem uses. Key-free like ai:: creds come from the named ENV VARS.
+    # If `claude` is already authenticated on the host (OAuth/keychain), zero
+    # config is needed (we run WITHOUT --bare so ambient auth is used). If the
+    # token env is set (a key-pool host), we inject ANTHROPIC_BASE_URL/
+    # AUTH_TOKEN/MODEL and add --bare, matching the research-agent runner exactly.
+    "cc": {
+        "enabled": True,
+        "bin": "claude",
+        "model": None,                  # --model + ANTHROPIC_MODEL; null = CC default
+        "narrate_model": None,          # optional faster model just for narration
+        "base_url_env": "ANTHROPIC_BASE_URL",
+        "token_env": "ANTHROPIC_AUTH_TOKEN",
+        "allowed_tools": "Read,Glob,Grep",   # read-only companion
+        "narrate_timeout": 45,
+        "qa_timeout": 180,
+    },
 }
 
 
