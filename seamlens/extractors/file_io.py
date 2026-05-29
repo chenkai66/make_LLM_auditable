@@ -88,6 +88,25 @@ class FileIOExtractor(Extractor):
             mid = module_id(rel)
             self.store.add_node(mid, "module", name=rel, file=rel)
 
+            # import aliases: `import os as _os` -> {'_os': 'os'}. _MOVE_CALLS is
+            # matched by fully-qualified name (so str.replace() can't false-trigger),
+            # which means an aliased `import os as _os; _os.replace(tmp, dst)` would
+            # otherwise be missed and the moved artifact shows as a false orphan.
+            # Normalizing the call's head segment through this map fixes that.
+            import_aliases = {}
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Import):
+                    for alias in n.names:
+                        if alias.asname:
+                            import_aliases[alias.asname] = alias.name
+
+            def norm_call(cn):
+                if cn and "." in cn:
+                    head, rest = cn.split(".", 1)
+                    if head in import_aliases:
+                        return import_aliases[head] + "." + rest
+                return cn
+
             # pass 1: var -> filename literals, for `p = os.path.join(d,'done.json')`
             # patterns later consumed as open(p)/os.path.exists(p).
             var_fnames = {}
@@ -107,7 +126,7 @@ class FileIOExtractor(Extractor):
             for n in ast.walk(tree):
                 if not isinstance(n, ast.Call):
                     continue
-                cn = call_name(n) or ""
+                cn = norm_call(call_name(n) or "")
                 short = cn.rsplit(".", 1)[-1]
                 direction = None
                 path_arg = None
