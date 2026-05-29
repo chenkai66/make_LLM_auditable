@@ -31,6 +31,9 @@ allow_dead_modules: []
 
 # Artifacts with no in-repo producer that are legitimately external/runtime
 # inputs (config written by ops, runtime state, downloaded by worker, etc.).
+# Entries may be exact names or globs. Each family below was positively
+# confirmed external -- a removed in-repo producer would NOT match these, so it
+# still surfaces. Keep this list to *verified* externals, not a catch-all.
 allow_orphan_reads:
   - "config.json"
   - "worker_tuning.json"
@@ -38,6 +41,33 @@ allow_orphan_reads:
   - "errors.db"
   - "fleet_secret"
   - "oss_secrets"
+  # LLM-subprocess outputs: written by a Claude agent inside its workspace per a
+  # prompt (e.g. agents/debate.py instructs "Write {dir}/verdict.json"), so there
+  # is no in-repo Python writer by design.
+  - "verdict.json"
+  - "review.json"
+  - "failure_analysis.json"
+  - "refined_idea.json"
+  - "idea_themes.json"
+  - "sota_table.json"
+  - "qa_suggestions.json"
+  # Ops/dashboard-written keys & config (hand-edited or written via REST handlers
+  # the static extractor can't resolve to a literal path).
+  - "*api*keys.json"
+  - "*api_keys.json"
+  - "keys.json"
+  - "research_pro_keys.json"
+  - "payment_config.json"
+  - "custom_topics.json"
+  - "priority_overrides.json"
+  # Eval datasets downloaded by the experiment subprocess at runtime.
+  - "gsm8k*.json"
+  - "truthfulqa*.json"
+  - "arc_easy*.json"
+  - "activitynet*.json"
+  - "*_dataset.json"
+  - "embeddings.npy"
+  - "embeddings.json"
 
 daemons:
   - "framework/kg_patch_merger.py"

@@ -3,6 +3,7 @@
 Run order is independent; the CLI runs all enabled linters and aggregates."""
 import os
 from collections import defaultdict
+from fnmatch import fnmatch
 
 from .base import Linter, Finding
 
@@ -75,8 +76,15 @@ class OrphanArtifactLinter(Linter):
         def is_data(fn):
             return fn.endswith(self.DATA_EXTS)
 
+        # allow-list entries may be exact names or globs (`*_dataset.json`,
+        # `gsm8k*`) -- a project declares a whole family of external/runtime
+        # inputs in one line instead of enumerating every basename.
+        def allowed(fn, allow):
+            return fn in allow or any(
+                ("*" in p or "?" in p or "[" in p) and fnmatch(fn, p) for p in allow)
+
         for fn, locs in sorted(readers.items()):
-            if fn in writers or fn in allow_r or not is_data(fn):
+            if fn in writers or allowed(fn, allow_r) or not is_data(fn):
                 continue
             yield Finding(
                 self.name, "info",
@@ -87,7 +95,7 @@ class OrphanArtifactLinter(Linter):
                 ids=["artifact:" + fn],
             )
         for fn, locs in sorted(writers.items()):
-            if fn in readers or fn in allow_w or not is_data(fn):
+            if fn in readers or allowed(fn, allow_w) or not is_data(fn):
                 continue
             yield Finding(
                 self.name, "info",

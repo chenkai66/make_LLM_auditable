@@ -18,7 +18,12 @@ exclude:
   - "static"
 io_helpers:
   read:  ["read_json", "load_json", "json.load", "_safe_read_json", "read_text"]
-  write: ["write_json", "save_json", "dump_json", "atomic_write", "_atomic_write", "write_text"]
+  # write helpers take the path as their first arg; declaring them lets the
+  # extractor resolve writes routed through a project helper (e.g.
+  # _docops_save(_DOCOPS_SUBSCRIBERS, data)) instead of reporting a false orphan.
+  write: ["write_json", "save_json", "dump_json", "atomic_write", "_atomic_write",
+          "write_text", "safe_write_json", "safe_json_write", "_docops_save",
+          "_atomic_write_json", "_write", "write_md", "_save_cache"]
 logger:
   install_fn: "error_logger.install"
   framework_setup: "logging.basicConfig"
@@ -30,5 +35,12 @@ prod_path_markers:
 fsm_sources:
   - "framework/pipeline_state.py:PROTOCOL_TRANSITIONS"
 test_file_markers: ["test_", "_test", "/tests/", "conftest"]
+# Path fragments marking a file as throwaway/experiment scratch -- divergent
+# constants among these are ignored (each one-off run_*.py experiment driver
+# carries its own DATA_DIR/EXP_DIR pointing at its private experiment folder,
+# which is expected, not a coupling bug). Extends the engine default with run_.
+scratch_markers: ["_legacy", "/tests/", "analyze_", "experiment_", "batch_",
+                  "latexify_", "run_", "create_mock", "generate_",
+                  "simple_experiment"]
 semantic_overlay: "seamlens.semantic.yaml"
 db_path: ".seamlens/system_graph.db"
