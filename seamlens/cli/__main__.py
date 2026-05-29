@@ -9,10 +9,12 @@
   python3 -m seamlens atlas  <project>  architecture atlas: DOT + AI narrative
   python3 -m seamlens triage <project>  AI ranks each finding real vs false-positive
   python3 -m seamlens evolve <project>  GAN loop: AI proposes fixes, graph referees
+  python3 -m seamlens audit  <project>  headless batch: AI auditor/architect read
+                                        real source, sink verdicts into node_meta
 
-The last three are the OPTIONAL AI layer (seamlens/ai). They are only wired in
-here and import lazily, so the core commands above never touch the ai package and
-run with zero AI configured.
+These last four are the OPTIONAL AI layer (seamlens/ai + seamlens/live). They are
+only wired in here and import lazily, so the core commands above never touch the
+ai/live packages and run with zero AI configured.
 """
 import argparse
 import json
@@ -222,6 +224,36 @@ def cmd_evolve(args):
                        linters=ALL_LINTERS)
 
 
+def cmd_audit(args):
+    # lazy: keeps the live package off the core import path (like atlas/triage)
+    from seamlens.live import batch_audit as _audit
+    cfg = Config.load(args.project, args.config)
+    store = GraphStore(cfg.db_path)
+    if not _require_scan(cfg, store):
+        store.close(); return 2
+    semantic = load_semantic(cfg)
+    findings = _collect_findings(cfg, store, semantic)
+    res = _audit.run(cfg, store, findings, git_rev=_git_rev(cfg.project_root),
+                     max_nodes=args.max, with_reading=not args.no_reading,
+                     bootstrap=args.bootstrap, lang=args.lang)
+    store.close()
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    if not res.get("ok"):
+        # graceful: AI unavailable is not a discriminator failure -- exit 0 so the
+        # periodic script's deterministic lint result stands on its own.
+        print("audit skipped: %s" % res.get("reason"), file=sys.stderr)
+        return 0
+    print("audited=%d skipped=%d candidates=%d new_risks=%d clean=%d" % (
+        res["audited"], res["skipped"], res.get("candidates", 0),
+        len(res["new_risks"]), len(res["clean"])))
+    for r in res["new_risks"]:
+        head = (r["risk"].splitlines()[0] if r["risk"] else "")
+        print("  RISK %s -- %s" % (r["node"], head[:160]))
+    return 0
+
+
 def cmd_init(args):
     dst = os.path.join(os.path.abspath(args.project), "seamlens.yaml")
     if os.path.exists(dst) and not args.force:
@@ -305,6 +337,17 @@ def main(argv=None):
     s.add_argument("--apply", action="store_true")
     s.add_argument("--severity", default="error,warning")
     s.set_defaults(fn=cmd_evolve)
+    s = sub.add_parser("audit"); add_common(s)
+    s.add_argument("--max", type=int, default=6,
+                   help="max nodes to audit this run (cost bound)")
+    s.add_argument("--no-reading", action="store_true",
+                   help="skip the architect 'reading' pass on brand-new modules")
+    s.add_argument("--bootstrap", action="store_true",
+                   help="fill the remaining budget with un-audited modules "
+                        "(backfill a cold graph / slowly enrich a stable one)")
+    s.add_argument("--lang", default="zh")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_audit)
 
     # --- live companion (browser god-view beside Claude Code) ---
     s = sub.add_parser("live"); add_common(s)
