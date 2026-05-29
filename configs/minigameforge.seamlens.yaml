@@ -1,0 +1,48 @@
+# seamlens config for MiniGameForge (CK Planet, /root/.minigameforge).
+# Place at /root/.minigameforge/seamlens.yaml
+# Project-specific surface ONLY -- the seamlens core stays generic.
+roots: ["."]
+exclude:
+  - "__pycache__"
+  - ".git"
+  - ".seamlens"
+  - ".pytest_cache"
+  - "backups"
+  - "kaizen.local-superseded.1779688440"
+  - "generated_assets"
+  - "games"
+  - "templates"
+  - "custom_templates"
+  - "web"
+  - "docs"
+  - "optim"
+  - "node_modules"
+io_helpers:
+  read:  ["read_json", "load_json", "json.load", "read_text", "_read_json", "_safe_read_json"]
+  write: ["write_json", "save_json", "dump_json", "atomic_write", "_atomic_write", "write_text", "_write_json"]
+logger:
+  install_fn: null
+  framework_setup: "logging.basicConfig"
+  explicit_handler_markers: ["StreamHandler", "addHandler"]
+# the production SQLite databases: a periodic test writing these would corrupt
+# live billing/user state (the test_writes_prod trap).
+prod_path_markers:
+  - "forge.db"
+  - "data.db"
+test_file_markers: ["test_", "_test", "/tests/", "conftest"]
+fsm_sources: []
+semantic_overlay: "seamlens.semantic.yaml"
+db_path: ".seamlens/system_graph.db"
+
+# Optional AI layer -- DISABLED in the file; enabled at runtime on the server
+# where the env vars below are exported from the shared ecs DashScope key pool.
+# No credential ever lives in this file or in the seamlens core.
+ai:
+  enabled: true
+  base_url_env: "SEAMLENS_AI_BASE_URL"
+  key_env: "SEAMLENS_AI_KEY"
+  base_url: null
+  model: "qwen-plus"
+  max_tokens: 2048
+  temperature: 0.2
+  timeout: 60

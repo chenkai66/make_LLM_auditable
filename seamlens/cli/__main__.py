@@ -5,6 +5,14 @@
   python3 -m seamlens diff  <project>   show node delta vs previous scan
   python3 -m seamlens query <project> --kind artifact   dump graph nodes
   python3 -m seamlens init  <project>   write a starter seamlens.yaml
+
+  python3 -m seamlens atlas  <project>  architecture atlas: DOT + AI narrative
+  python3 -m seamlens triage <project>  AI ranks each finding real vs false-positive
+  python3 -m seamlens evolve <project>  GAN loop: AI proposes fixes, graph referees
+
+The last three are the OPTIONAL AI layer (seamlens/ai). They are only wired in
+here and import lazily, so the core commands above never touch the ai package and
+run with zero AI configured.
 """
 import argparse
 import json
@@ -36,6 +44,21 @@ def _git_rev(root):
         return ""
 
 
+def _collect_findings(cfg, store, semantic):
+    """Run all linters, return findings sorted by severity. Shared by lint and
+    the AI commands so they all see the identical deterministic finding set."""
+    findings = []
+    for L in ALL_LINTERS:
+        lint = L(cfg, store, semantic)
+        try:
+            findings.extend(lint.run())
+        except Exception as e:
+            print("  ! linter %s failed: %s" % (L.name, e), file=sys.stderr)
+    order = {"error": 0, "warning": 1, "info": 2}
+    findings.sort(key=lambda f: order.get(f.severity, 9))
+    return findings
+
+
 def cmd_scan(args):
     cfg = Config.load(args.project, args.config)
     store = GraphStore(cfg.db_path)
@@ -60,15 +83,7 @@ def cmd_lint(args):
         print("no scan yet; run `seamlens scan` first", file=sys.stderr)
         return 2
     semantic = load_semantic(cfg)
-    findings = []
-    for L in ALL_LINTERS:
-        lint = L(cfg, store, semantic)
-        try:
-            findings.extend(lint.run())
-        except Exception as e:
-            print("  ! linter %s failed: %s" % (L.name, e), file=sys.stderr)
-    order = {"error": 0, "warning": 1, "info": 2}
-    findings.sort(key=lambda f: order.get(f.severity, 9))
+    findings = _collect_findings(cfg, store, semantic)
     if args.json:
         print(json.dumps([f.as_dict() for f in findings], ensure_ascii=False, indent=2))
     else:
@@ -103,6 +118,108 @@ def cmd_query(args):
     for n in store.nodes(args.kind):
         print("%-16s %-40s %s:%s" % (n["kind"], n["name"], n["file"], n["line"]))
     store.close()
+
+
+def _require_scan(cfg, store):
+    if store.current_run() is None:
+        print("no scan yet; run `seamlens scan` first", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_atlas(args):
+    # lazy: keeps the ai package off the core import path
+    from seamlens.ai.provider import Provider
+    from seamlens.ai import atlas as _atlas
+    cfg = Config.load(args.project, args.config)
+    store = GraphStore(cfg.db_path)
+    if not _require_scan(cfg, store):
+        store.close(); return 2
+    semantic = load_semantic(cfg)
+    findings = _collect_findings(cfg, store, semantic)
+    st = _atlas.stats(store, findings)
+    dot = _atlas.build_dot(store, findings)
+    outdir = cfg.abspath(args.outdir)
+    os.makedirs(outdir, exist_ok=True)
+    dot_path = os.path.join(outdir, "atlas.dot")
+    with open(dot_path, "w") as f:
+        f.write(dot)
+    narrative = None
+    if not args.no_ai:
+        prov = Provider.from_config(cfg)
+        if prov.enabled and prov.available:
+            narrative = _atlas.narrate(prov, st, findings, _atlas._graph_excerpt(store))
+            if narrative is None:
+                print("  (ai narrative skipped: %s)" % prov.last_error, file=sys.stderr)
+        elif prov.enabled:
+            print("  (ai enabled but unavailable: %s)" % prov.explain_unavailable(),
+                  file=sys.stderr)
+    md = _atlas.render_markdown(st, narrative)
+    md_path = os.path.join(outdir, "atlas.md")
+    with open(md_path, "w") as f:
+        f.write(md)
+    print("atlas -> %s" % dot_path)
+    print("        %s" % md_path)
+    print("  modules=%d artifacts=%d findings(e/w/i)=%d/%d/%d%s" % (
+        st["modules"], st["artifacts"], st["findings"]["error"],
+        st["findings"]["warning"], st["findings"]["info"],
+        "  +narrative" if narrative else ""))
+    store.close()
+    return 0
+
+
+def cmd_triage(args):
+    from seamlens.ai.provider import Provider
+    from seamlens.ai import triage as _triage
+    cfg = Config.load(args.project, args.config)
+    store = GraphStore(cfg.db_path)
+    if not _require_scan(cfg, store):
+        store.close(); return 2
+    semantic = load_semantic(cfg)
+    findings = _collect_findings(cfg, store, semantic)
+    sev_filter = set(args.severity.split(",")) if args.severity else None
+    if sev_filter:
+        findings = [f for f in findings if f.severity in sev_filter]
+    prov = Provider.from_config(cfg)
+    if not (prov.enabled and prov.available):
+        print("triage needs ai enabled+configured: %s" % prov.explain_unavailable(),
+              file=sys.stderr)
+        store.close(); return 2
+    results = _triage.triage(prov, cfg, findings, limit=args.limit)
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+    else:
+        for r in results:
+            print("[%s] verdict=%s conf=%.2f  %s" % (
+                r["severity"], r["verdict"], r.get("confidence", 0), r["title"]))
+            print("    reason: %s" % r.get("reason", ""))
+            if r.get("fix_hint"):
+                print("    fix:    %s" % r["fix_hint"])
+            if r.get("precision_rule"):
+                print("    rule:   %s" % r["precision_rule"])
+        real = sum(1 for r in results if r["verdict"] == "real")
+        fp = sum(1 for r in results if r["verdict"] == "false_positive")
+        print("\n%d triaged: %d real, %d false-positive" % (len(results), real, fp))
+    store.close()
+    return 0
+
+
+def cmd_evolve(args):
+    from seamlens.ai.provider import Provider
+    from seamlens.ai import evolve as _evolve
+    cfg = Config.load(args.project, args.config)
+    store = GraphStore(cfg.db_path)
+    if not _require_scan(cfg, store):
+        store.close(); return 2
+    prov = Provider.from_config(cfg)
+    if not (prov.enabled and prov.available):
+        print("evolve needs ai enabled+configured: %s" % prov.explain_unavailable(),
+              file=sys.stderr)
+        store.close(); return 2
+    store.close()
+    return _evolve.run(cfg, prov, rounds=args.rounds, apply=args.apply,
+                       severity=args.severity, extractors=EXTRACTORS,
+                       linters=ALL_LINTERS)
 
 
 def cmd_init(args):
@@ -149,6 +266,22 @@ def main(argv=None):
     s.add_argument("--kind", default=None); s.set_defaults(fn=cmd_query)
     s = sub.add_parser("init"); add_common(s)
     s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_init)
+
+    # --- optional AI layer (lazy-imports seamlens.ai only when invoked) ---
+    s = sub.add_parser("atlas"); add_common(s)
+    s.add_argument("--outdir", default=".seamlens")
+    s.add_argument("--no-ai", action="store_true")
+    s.set_defaults(fn=cmd_atlas)
+    s = sub.add_parser("triage"); add_common(s)
+    s.add_argument("--severity", default="error,warning")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_triage)
+    s = sub.add_parser("evolve"); add_common(s)
+    s.add_argument("--rounds", type=int, default=1)
+    s.add_argument("--apply", action="store_true")
+    s.add_argument("--severity", default="error,warning")
+    s.set_defaults(fn=cmd_evolve)
 
     args = p.parse_args(argv)
     rc = args.fn(args)

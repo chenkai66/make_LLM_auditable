@@ -1,6 +1,7 @@
 """The bug-class linters. Each one is named for the real incident it catches.
 
 Run order is independent; the CLI runs all enabled linters and aggregates."""
+import os
 from collections import defaultdict
 
 from .base import Linter, Finding
@@ -301,6 +302,15 @@ class DeadModuleLinter(Linter):
 
     def run(self):
         scratch = self.cfg.get("scratch_markers", _DEFAULT_SCRATCH)
+        # Test modules are imported & run by a discovering test runner (pytest),
+        # not by `python file.py` or an in-repo import -- so importers==0 +
+        # no-__main__ is NORMAL for them, not dead code. Honor the same generic
+        # test_file_markers the test-writes-prod linter uses. (Surfaced by the AI
+        # discriminator: 5/11 INFO findings on MiniGameForge were pytest files
+        # the `/tests/` scratch marker missed because relpaths lack a leading
+        # slash. Matching on the markers below is path-separator agnostic.)
+        test_markers = self.cfg.get("test_file_markers",
+                                    ["test_", "_test", "/tests/", "conftest"])
         allow = set(self.semantic.get("allow_dead_modules", []))
         for m in self.store.nodes("module"):
             a = m["attrs"] or {}
@@ -312,6 +322,9 @@ class DeadModuleLinter(Linter):
             # a guard-less script with top-level work is a runnable entrypoint,
             # not a dead library -- don't flag it.
             if a.get("toplevel_exec"):
+                continue
+            base = os.path.basename(rel or "")
+            if any(tm.strip("/") in rel or base.startswith(tm) for tm in test_markers):
                 continue
             if rel in allow or any(s in (rel or "") for s in scratch):
                 continue

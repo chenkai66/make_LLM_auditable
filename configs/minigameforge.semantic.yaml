@@ -1,0 +1,30 @@
+# Layer 2: curated semantic overlay for MiniGameForge.
+# Thin by design -- only couplings/intents that cannot be derived from code.
+# Place at /root/.minigameforge/seamlens.semantic.yaml
+
+# Equivalent-signal groups: declare here only when two filenames are meant to be
+# the SAME completion/handshake signal and a producer/consumer mismatch would
+# silently break a flow. (Add as real seams are discovered in the scan.)
+artifact_groups: {}
+
+# Constants that MUST agree across modules even though they have different names
+# (e.g. token pricing duplicated in the API and the billing module). Populate
+# after the first scan surfaces divergent-constant candidates.
+constant_groups: {}
+
+path_aliases: []
+
+# Confirmed-but-retained dead modules (add a relpath to silence a known orphan).
+allow_dead_modules: []
+
+# Artifacts with no in-repo producer that are legitimately external/runtime
+# inputs (the live DBs are created/managed at runtime, JWT secret written once).
+allow_orphan_reads:
+  - "forge.db"
+  - "data.db"
+  - ".jwt_secret"
+  - "requirements.txt"
+
+invariants:
+  - "no test module may write forge.db or data.db (production billing/user state)"
+  - "token pricing must have a single source of truth shared by API + billing"

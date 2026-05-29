@@ -48,6 +48,19 @@ DEFAULTS = {
     "semantic_overlay": "seamlens.semantic.yaml",
     # where the graph db is written (relative to project root)
     "db_path": ".seamlens/system_graph.db",
+    # Layer 4 (optional, disabled by default): AI assist. Credentials live in the
+    # named ENV VARS, never here -- the core stays key-free and works AI-off. The
+    # whole ai/ package is optional; nothing in the core imports it.
+    "ai": {
+        "enabled": False,
+        "base_url_env": "SEAMLENS_AI_BASE_URL",
+        "key_env": "SEAMLENS_AI_KEY",
+        "base_url": None,
+        "model": "qwen-plus",
+        "max_tokens": 2048,
+        "temperature": 0.2,
+        "timeout": 60,
+    },
 }
 
 
