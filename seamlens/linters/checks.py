@@ -138,6 +138,17 @@ class DivergentConstantLinter(Linter):
 
     def run(self):
         scratch = self.cfg.get("scratch_markers", _DEFAULT_SCRATCH)
+        # [[alias, canonical], ...] -- collapse filesystem-equivalent path
+        # fragments (e.g. a `data` symlink to `data.default`) so two literals
+        # that resolve to the same location aren't reported as divergent.
+        aliases = self.semantic.get("path_aliases", []) or []
+
+        def norm(v):
+            if isinstance(v, str):
+                for pair in aliases:
+                    if len(pair) == 2:
+                        v = v.replace(pair[0], pair[1])
+            return v
 
         def is_scratch(d):
             return any(m in (d["file"] or "") for m in scratch)
@@ -153,7 +164,7 @@ class DivergentConstantLinter(Linter):
                 a = d["attrs"] or {}
                 if a.get("value") is None or a.get("value_kind") == "dynamic":
                     continue
-                vals[a["value"]].append(d)
+                vals[norm(a["value"])].append(d)
             if len(vals) < 2:
                 return []
             # distinct files only -- same value re-imported isn't divergence
@@ -280,10 +291,12 @@ class TestWritesProdLinter(Linter):
 
 class DeadModuleLinter(Linter):
     """CATCHES: a divergent legacy copy left in the tree (state_machine.py held a
-    second PROTOCOL_TRANSITIONS that no longer matched pipeline_state.py). Rule: a
-    module nobody imports (in-degree 0) AND with no `__main__` guard cannot run
-    either way -- it is an orphan whose stale constants/logic silently rot and
-    mislead linters & humans. Scratch/test dirs are exempt."""
+    second PROTOCOL_TRANSITIONS that no longer matched pipeline_state.py;
+    lib/dashboard_auth.py held a stale PUBLIC_PATHS auth-bypass set). Rule: a
+    module nobody imports (in-degree 0), with no `__main__` guard, AND no
+    top-level executable code is a *library nobody uses* -- it can neither be run
+    nor imported, so its constants/logic silently rot. A guard-less script (has
+    top-level exec, runs via `python3 file.py`) is NOT dead -- excluded."""
     name = "dead_module"
 
     def run(self):
@@ -296,16 +309,21 @@ class DeadModuleLinter(Linter):
             rel = m["name"]
             if a["importers"] != 0 or a.get("has_main"):
                 continue
+            # a guard-less script with top-level work is a runnable entrypoint,
+            # not a dead library -- don't flag it.
+            if a.get("toplevel_exec"):
+                continue
             if rel in allow or any(s in (rel or "") for s in scratch):
                 continue
             if rel.endswith("__init__.py") or rel == "setup.py":
                 continue
             yield Finding(
                 self.name, "info",
-                "Module '%s' is never imported and has no __main__ guard" % rel,
-                "0 importers, no entrypoint guard -- likely an orphan/legacy copy. "
-                "Its constants and logic can diverge from the live module unnoticed "
-                "(the state_machine.py trap). Delete it or wire it in.",
+                "Module '%s' is an unused library (never imported, not runnable)" % rel,
+                "0 importers, no __main__ guard, no top-level code -- it can neither "
+                "be imported nor run. Likely an orphan/legacy copy whose constants "
+                "drift from the live module unnoticed (the state_machine.py / "
+                "dashboard_auth.py trap). Delete it or wire it in.",
                 where=[rel],
                 ids=[m["id"]],
             )

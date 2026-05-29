@@ -10,6 +10,30 @@ import ast
 
 from .base import Extractor, iter_py_files, parse_py, module_id
 
+# Top-level statement types that are "library-shaped" -- present in a module that
+# is meant to be imported, not run. Anything else at module level (a bare call,
+# a loop, a with-block) is script behavior that executes on `python3 file.py`.
+_LIB_STMTS = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef,
+              ast.ClassDef, ast.Assign, ast.AnnAssign, ast.AugAssign)
+
+
+def _has_toplevel_exec(tree):
+    """True if the module runs work at import/run time beyond definitions --
+    i.e. it behaves like a script. A guard-less runnable script has this; a pure
+    importable library (only defs/imports/constants) does not. Used to tell a
+    dead library (0 importers, no exec) from a runnable entrypoint script."""
+    for n in ast.iter_child_nodes(tree):
+        if isinstance(n, _LIB_STMTS):
+            continue
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant):
+            continue                                  # module docstring
+        if isinstance(n, ast.If):
+            t = ast.dump(n.test)
+            if "__name__" in t and "__main__" in t:
+                continue                              # the entry guard itself
+        return True
+    return False
+
 
 def _candidate_names(rel):
     """Importable dotted forms for a module path:
@@ -39,6 +63,7 @@ class ImportsExtractor(Extractor):
                 index.setdefault(nm, set()).add(rel)
 
         has_main = {}
+        toplevel_exec = {}
         for ap, rel in files:
             tree, _ = parse_py(ap)
             if tree is None:
@@ -50,6 +75,7 @@ class ImportsExtractor(Extractor):
                 isinstance(n, ast.If) and "__main__" in ast.dump(n.test)
                 for n in ast.iter_child_nodes(tree))
             has_main[rel] = main
+            toplevel_exec[rel] = _has_toplevel_exec(tree)
 
             targets = set()
             for n in ast.walk(tree):
@@ -57,20 +83,43 @@ class ImportsExtractor(Extractor):
                     for a in n.names:
                         targets.add(a.name)
                         targets.add(a.name.split(".")[0])
-                elif isinstance(n, ast.ImportFrom) and n.level == 0:
-                    # Resolve both the module and each imported name. The latter
-                    # matters for `from lib import dashboard_auth` (a submodule
-                    # imported by name) -- without it every `from pkg import mod`
-                    # target is missed and the submodule looks like a dead orphan.
-                    if n.module:
-                        targets.add(n.module)
-                        targets.add(n.module.split(".")[-1])
-                    for a in n.names:
-                        if a.name == "*":
-                            continue
+                elif isinstance(n, ast.ImportFrom):
+                    if n.level == 0:
+                        # Absolute. Resolve the module and each imported name;
+                        # the latter matters for `from lib import dashboard_auth`
+                        # (a submodule imported by name) -- without it every
+                        # `from pkg import mod` target is missed and the submodule
+                        # looks like a dead orphan.
                         if n.module:
-                            targets.add(n.module + "." + a.name)
-                        targets.add(a.name)
+                            targets.add(n.module)
+                            targets.add(n.module.split(".")[-1])
+                        for a in n.names:
+                            if a.name == "*":
+                                continue
+                            if n.module:
+                                targets.add(n.module + "." + a.name)
+                            targets.add(a.name)
+                    else:
+                        # Relative (`from .adapter import X`, `from . import mod`).
+                        # Resolve against this file's package: drop the filename,
+                        # then climb `level` packages. Without this, package-style
+                        # projects undercount imports and libraries look dead.
+                        pkg = rel[:-3].replace("\\", "/").split("/")[:-1]
+                        base = pkg[:len(pkg) - (n.level - 1)] if n.level >= 1 else pkg
+                        prefix = ".".join(base)
+                        if n.module:
+                            full = (prefix + "." + n.module) if prefix else n.module
+                            targets.add(full)
+                            targets.add(n.module.split(".")[-1])
+                            for a in n.names:
+                                if a.name != "*":
+                                    targets.add(full + "." + a.name)
+                        else:
+                            for a in n.names:
+                                if a.name == "*":
+                                    continue
+                                targets.add((prefix + "." + a.name) if prefix else a.name)
+                                targets.add(a.name)
             for t in targets:
                 for dst_rel in index.get(t, ()):
                     if dst_rel == rel:
@@ -85,5 +134,6 @@ class ImportsExtractor(Extractor):
             mid = module_id(rel)
             self.store.add_node(
                 mid, "module", name=rel, file=rel,
-                importers=indeg.get(mid, 0), has_main=has_main.get(rel, False))
+                importers=indeg.get(mid, 0), has_main=has_main.get(rel, False),
+                toplevel_exec=toplevel_exec.get(rel, False))
         self.store.flush()

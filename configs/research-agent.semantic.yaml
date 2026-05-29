@@ -19,6 +19,16 @@ constant_groups:
       cores*9) caused boss to reject whole batches early (79->0 backpressure).
       Should route through worker_tuning.json.
 
+# Filesystem-equivalent path fragments: `data` is a symlink to `data.default`,
+# so DIR constants written either way resolve to the same location and are NOT
+# divergent. [alias, canonical] -- alias is rewritten to canonical before compare.
+path_aliases:
+  - ["data.default/", "data/"]
+
+# Genuinely-dead orphan libraries that are intentionally kept (none right now;
+# add a relpath here to silence a confirmed-but-retained dead module).
+allow_dead_modules: []
+
 # Artifacts with no in-repo producer that are legitimately external/runtime
 # inputs (config written by ops, runtime state, downloaded by worker, etc.).
 allow_orphan_reads:
