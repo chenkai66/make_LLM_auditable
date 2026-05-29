@@ -247,6 +247,24 @@ db_path: ".seamlens/system_graph.db"
 """
 
 
+def cmd_live(args):
+    # lazy: keeps the live package (http server, ai) off the core import path
+    from seamlens.live import install as _install
+    cfg = Config.load(args.project, args.config)
+    if args.install:
+        _install.install(cfg.project_root, port=args.port)
+        return 0
+    # always (re)scan at startup so the live baseline reflects the CURRENT tree --
+    # otherwise the first edit's delta would include everything that changed since
+    # an older scan, instead of just that edit.
+    print("scanning baseline ...")
+    cmd_scan(argparse.Namespace(project=args.project, config=args.config,
+                                note="live-baseline", quiet=True))
+    from seamlens.live import server as _server
+    _server.serve(cfg, port=args.port, open_ui=not args.no_browser, lang=args.lang)
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="seamlens")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -282,6 +300,15 @@ def main(argv=None):
     s.add_argument("--apply", action="store_true")
     s.add_argument("--severity", default="error,warning")
     s.set_defaults(fn=cmd_evolve)
+
+    # --- live companion (browser god-view beside Claude Code) ---
+    s = sub.add_parser("live"); add_common(s)
+    s.add_argument("--install", action="store_true",
+                   help="write the CC hook config into .claude/settings.local.json, then exit")
+    s.add_argument("--port", type=int, default=8722)
+    s.add_argument("--lang", default="zh", help="default narration language (zh/en/ja/...)")
+    s.add_argument("--no-browser", action="store_true")
+    s.set_defaults(fn=cmd_live)
 
     args = p.parse_args(argv)
     rc = args.fn(args)

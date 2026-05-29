@@ -57,6 +57,23 @@ python3 -m seamlens query /path/to/your/project --kind artifact   # dump graph n
 python3 -m seamlens diff  /path/to/your/project                   # node delta vs previous scan (blast radius)
 ```
 
+## Live companion — a god-view for Claude Code
+
+`seamlens live` turns the batch auditor into an always-on browser sidebar beside
+Claude Code. On every meaningful edit it narrates *what changed and why it
+matters* in plain language, pulses the edited node inside the full system graph,
+and animates the new edges the change introduced — and you can ask it questions in
+your language of choice. It reuses the same graph, linters, and `ai:` config; the
+core commands above never import it.
+
+```bash
+python3 -m seamlens live --install /path/to/project   # wire CC hooks (idempotent)
+python3 -m seamlens live /path/to/project              # start; opens the browser
+```
+
+See `docs/LIVE.md` for the full walkthrough (languages, ports, the meaningful-event
+filter, and the graceful no-LLM fallback).
+
 ## Adopting on a new project
 
 The only host-aware surface is `seamlens.yaml`. The fields that matter most:

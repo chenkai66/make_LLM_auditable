@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>seamlens live — 上帝视角</title>
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#222b36; --txt:#e6edf3; --dim:#8b949e;
+    --mod:#4aa3ff; --art:#f5c451; --const:#b08cff; --state:#5ed3a0; --dead:#5a6573;
+    --entry:#2ee6a6; --hot:#ff5c6c; --new:#3fb950;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font:13px/1.5 -apple-system,Segoe UI,Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+  #app{display:flex;height:100vh}
+  #left{flex:1 1 60%;position:relative;border-right:1px solid var(--line)}
+  #cy{position:absolute;inset:0}
+  #right{flex:0 0 40%;max-width:520px;display:flex;flex-direction:column;background:var(--panel)}
+  header{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+  header h1{font-size:14px;margin:0;font-weight:600}
+  header .proj{color:var(--dim);font-size:12px}
+  .badge{font-size:11px;padding:2px 7px;border-radius:10px;border:1px solid var(--line)}
+  .badge.on{color:#0e1116;background:var(--entry)}
+  .badge.off{color:var(--dim)}
+  select{background:#0d1117;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+  #feed{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px}
+  .card{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+  .card .act{color:var(--dim);font-size:11px;margin-bottom:3px;word-break:break-all}
+  .card .narr{font-size:13px}
+  .card .narr.pending{color:var(--dim);font-style:italic}
+  .card.qa{border-color:#2d4b6e}
+  .card.qa .q{color:var(--mod);margin-bottom:4px}
+  .delta{margin-top:6px;font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
+  .delta .add{color:var(--new)} .delta .rem{color:var(--hot)}
+  .find{margin-top:5px;font-size:11px}
+  .find .error{color:var(--hot)} .find .warning{color:var(--art)} .find .info{color:var(--dim)}
+  #ask{display:flex;gap:6px;padding:10px;border-top:1px solid var(--line)}
+  #ask input{flex:1;background:#0d1117;color:var(--txt);border:1px solid var(--line);
+    border-radius:6px;padding:8px}
+  #ask button{background:var(--mod);color:#031019;border:0;border-radius:6px;padding:8px 12px;
+    font-weight:600;cursor:pointer}
+  .legend{position:absolute;left:10px;bottom:10px;background:rgba(13,17,23,.85);
+    border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:11px;color:var(--dim)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="cy"></div>
+    <div class="legend">
+      <div><i style="background:var(--entry)"></i>entrypoint &nbsp;<i style="background:var(--mod)"></i>module &nbsp;<i style="background:var(--dead)"></i>dead</div>
+      <div><i style="background:var(--art)"></i>artifact &nbsp;<i style="background:var(--const)"></i>const &nbsp;<i style="background:var(--state)"></i>state</div>
+    </div>
+  </div>
+  <div id="right">
+    <header>
+      <h1>seamlens <span style="color:var(--entry)">live</span></h1>
+      <span class="proj" id="proj"></span>
+      <span class="badge off" id="aibadge">AI ?</span>
+      <span style="flex:1"></span>
+      <select id="lang"></select>
+    </header>
+    <div id="feed"></div>
+    <form id="ask" onsubmit="return ask(event)">
+      <input id="q" placeholder="问问这次改动…（例如：会引入孤儿 artifact 吗？）" autocomplete="off">
+      <button type="submit">问</button>
+    </form>
+  </div>
+</div>
+<script>
+const COLORS={module:'#4aa3ff',artifact:'#f5c451',const:'#b08cff',state:'#5ed3a0'};
+const ROLE={entrypoint:'#2ee6a6',dead:'#5a6573'};
+let cy, LANG='zh';
+
+function nodeColor(d){ return ROLE[d.role] || COLORS[d.group] || '#4aa3ff'; }
+
+async function boot(){
+  const cfg = await (await fetch('/config')).json();
+  document.getElementById('proj').textContent = cfg.project || '';
+  const badge=document.getElementById('aibadge');
+  badge.textContent = cfg.ai? 'AI on':'AI off (模板讲解)';
+  badge.className='badge '+(cfg.ai?'on':'off');
+  LANG = cfg.lang || 'zh';
+  const sel=document.getElementById('lang');
+  (cfg.languages||[['zh','简体中文'],['en','English']]).forEach(([code,name])=>{
+    const o=document.createElement('option'); o.value=code; o.textContent=name;
+    if(code===LANG)o.selected=true; sel.appendChild(o);
+  });
+  sel.onchange=async()=>{ LANG=sel.value; await fetch('/lang',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({lang:LANG})}); };
+
+  const g = await (await fetch('/graph')).json();
+  initGraph(g);
+  connect();
+}
+
+function initGraph(g){
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: { nodes: g.nodes||[], edges: g.edges||[] },
+    style: [
+      {selector:'node',style:{
+        'background-color':(e)=>nodeColor(e.data()),
+        'label':'data(label)','color':'#c9d1d9','font-size':'7px',
+        'text-wrap':'wrap','text-max-width':'80px','width':14,'height':14,
+        'text-valign':'bottom','text-margin-y':2}},
+      {selector:'node[group="artifact"]',style:{'shape':'round-rectangle','width':16,'height':12}},
+      {selector:'edge',style:{'width':1,'line-color':'#30363d','curve-style':'bezier',
+        'target-arrow-shape':'triangle','target-arrow-color':'#30363d','arrow-scale':0.6}},
+      {selector:'edge[kind="writes"]',style:{'line-color':'#2e8b57','target-arrow-color':'#2e8b57'}},
+      {selector:'edge[kind="reads"]',style:{'line-color':'#4169e1','target-arrow-color':'#4169e1'}},
+      {selector:'.edited',style:{'border-width':3,'border-color':'#ff5c6c',
+        'width':22,'height':22,'z-index':99}},
+      {selector:'.new-edge',style:{'width':3,'line-color':'#3fb950',
+        'target-arrow-color':'#3fb950','z-index':99}},
+      {selector:'.dim',style:{'opacity':0.25}},
+    ],
+    layout:{name:'cose',animate:false,nodeRepulsion:8000,idealEdgeLength:60,padding:30},
+    wheelSensitivity:0.2,
+  });
+}
+
+function connect(){
+  const es=new EventSource('/stream');
+  es.onmessage=(ev)=>{ let m; try{m=JSON.parse(ev.data)}catch(e){return} dispatch(m); };
+  es.onerror=()=>{ /* browser auto-reconnects */ };
+}
+
+let pendingCard=null;
+function dispatch(m){
+  if(m.type==='graph_delta'){ onDelta(m); }
+  else if(m.type==='narration'){ fillNarration(m.text); }
+  else if(m.type==='answer'){ addQA(m.question,m.text); }
+}
+
+function onDelta(m){
+  // feed card (narration arrives async and fills it)
+  const card=document.createElement('div'); card.className='card';
+  card.innerHTML='<div class="act"></div><div class="narr pending">正在生成讲解…</div>';
+  card.querySelector('.act').textContent='▸ '+(m.action||'');
+  const d=m.delta||{};
+  const bits=[];
+  (d.added_edges||[]).slice(0,6).forEach(e=>bits.push('<span class="add">+ '+e.data.kind+' '+short(e.data.source)+' → '+short(e.data.target)+'</span>'));
+  (d.removed_edges||[]).slice(0,4).forEach(e=>bits.push('<span class="rem">− '+e.data.kind+' '+short(e.data.source)+' → '+short(e.data.target)+'</span>'));
+  if(bits.length){ const dv=document.createElement('div'); dv.className='delta'; dv.innerHTML=bits.join('<br>'); card.appendChild(dv); }
+  (m.findings||[]).forEach(f=>{ const fv=document.createElement('div'); fv.className='find';
+    fv.innerHTML='<span class="'+f.severity+'">● ['+f.severity+'] '+esc(f.title)+'</span>'; card.appendChild(fv); });
+  const feed=document.getElementById('feed'); feed.prepend(card); pendingCard=card;
+  // graph animation
+  if(cy) animate(m);
+}
+
+function animate(m){
+  cy.elements().removeClass('edited new-edge');
+  // add any genuinely new nodes/edges that weren't in the initial render
+  (m.delta&&m.delta.added_nodes||[]).forEach(n=>{ if(!cy.getElementById(n.data.id).length) cy.add(n); });
+  (m.delta&&m.delta.added_edges||[]).forEach(e=>{
+    let el=cy.getElementById(e.data.id);
+    if(!el.length){ el=cy.add(e); }
+    el.addClass('new-edge');
+  });
+  if(m.edited_node){
+    const n=cy.getElementById(m.edited_node);
+    if(n.length){ n.addClass('edited');
+      cy.animate({center:{eles:n},zoom:Math.max(cy.zoom(),1.2)},{duration:500}); }
+  }
+  setTimeout(()=>{ cy.elements().removeClass('new-edge'); },4000);
+}
+
+function fillNarration(text){
+  const card=pendingCard || document.querySelector('#feed .card');
+  if(!card)return;
+  const n=card.querySelector('.narr'); if(n){ n.textContent=text; n.className='narr'; }
+  pendingCard=null;
+}
+
+function addQA(q,a){
+  const card=document.createElement('div'); card.className='card qa';
+  card.innerHTML='<div class="q">问：'+esc(q)+'</div><div class="narr"></div>';
+  card.querySelector('.narr').textContent=a;
+  document.getElementById('feed').prepend(card);
+}
+
+async function ask(ev){
+  ev.preventDefault();
+  const inp=document.getElementById('q'); const q=inp.value.trim(); if(!q)return false;
+  inp.value=''; addQA(q,'…');
+  const top=document.querySelector('#feed .card.qa .narr');
+  try{
+    const r=await (await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question:q,lang:LANG})})).json();
+    if(top)top.textContent=r.answer;
+  }catch(e){ if(top)top.textContent='(请求失败)'; }
+  return false;
+}
+
+function short(id){ return (id||'').replace('mod:','').replace('artifact:',''); }
+function esc(s){ return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+boot();
+</script>
+</body>
+</html>
