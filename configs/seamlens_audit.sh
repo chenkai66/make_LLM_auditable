@@ -33,6 +33,12 @@ fi
 
 TS() { date '+%Y-%m-%dT%H:%M:%S'; }
 
+# cron runs with a minimal PATH (/usr/bin:/bin); claude lives in
+# /usr/local/bin. Without this the preflight below ALWAYS reports 'no
+# claude on PATH -- skip' and the AI audit layer silently never runs
+# (it was dead this way for 9 days, 2026-05-30..06-08). Prepend bin dirs.
+export PATH="/usr/local/bin:/usr/local/sbin:/root/.local/bin:$PATH"
+
 # --- preflight: claude on PATH + a usable key, else this host has no AI layer ---
 if ! command -v claude >/dev/null 2>&1; then
   echo "$(TS) audit: no claude on PATH -- skip" >> "$AUDIT_LOG"; exit 0
@@ -42,8 +48,8 @@ if [ ! -r "$KEYS" ]; then
 fi
 
 # --- memory window: wait up to ~5 min for the box to have headroom ---
-MIN_AVAIL_MB=5200      # need real free RAM for a 5th agentic claude
-MAX_PROCS=2            # at most this many experiment claudes already running
+MIN_AVAIL_MB=4500      # effort=low audit is ~2min + light; 4500 fits the steady-state
+MAX_PROCS=4            # an effort=low audit survived at 4 concurrent experiments
 WIN_TRIES=10           # 10 * 30s = 5 min budget
 have_window=0
 for _ in $(seq "$WIN_TRIES"); do

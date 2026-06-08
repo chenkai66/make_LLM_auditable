@@ -350,7 +350,62 @@ class DeadModuleLinter(Linter):
             )
 
 
+
+class FeedbackLoopLinter(Linter):
+    """CATCHES: the dominant 2026-06-08 bug class -- a "write-only feedback
+    loop". A producer writes a feedback/learning artifact (lesson, reward
+    verdict, learning record) but the loop never closes: either NO declared
+    consumer reads it, or the declared consumer reads a DIFFERENT filename. The
+    learning loop / monitor-no-op / alerting-log-only incidents all share this
+    shape -- a signal is produced (or a sink is wired) but nothing on the other
+    end consumes it, so it silently does nothing for days.
+
+    Config-driven (semantic overlay `feedback_loops`), so it is high precision::
+
+        feedback_loops:
+          experiment_lessons:
+            produces: ["lesson.json", "experiment_lesson.json"]
+            consumed_by_reading: ["lessons.json"]   # what the consumer ACTUALLY reads
+
+    Rule: for each declared loop, any `produces` member that is written in-repo
+    but read by NO module is an OPEN loop (error). If the loop declares
+    `consumed_by_reading` and none of those names are read anywhere, the
+    consumer side is DEAD (error) -- the loop is wired one-way only."""
+    name = "feedback_loop_open"
+
+    def run(self):
+        writers, readers = _io_maps(self.store)
+        loops = (self.semantic.get("feedback_loops") or {})
+        for lname, spec in loops.items():
+            produces = spec.get("produces", []) or []
+            consumes = spec.get("consumed_by_reading", []) or []
+            # produced-but-never-read: the signal escapes into the void
+            for m in sorted(p for p in produces if writers.get(p) and not readers.get(p)):
+                prod = writers[m][0]
+                yield Finding(
+                    self.name, "error",
+                    "Feedback artifact '%s' is produced but never consumed" % m,
+                    "Loop '%s': '%s' is written but no module reads it; the "
+                    "feedback loop is write-only and silently closes nothing. "
+                    "Wire a reader, or fix the consumer's filename." % (lname, m),
+                    where=["%s:%s" % (prod[1], prod[2])],
+                    ids=["artifact:" + m],
+                )
+            # consumer declared but reads NONE of the family: dead reader side
+            if consumes and not any(readers.get(c) for c in consumes):
+                produced_now = [p for p in produces if writers.get(p)]
+                yield Finding(
+                    self.name, "error",
+                    "Feedback loop '%s' has a dead consumer side" % lname,
+                    "Declared consumer reads %s but none of those names are read "
+                    "anywhere; meanwhile producers write %s. The loop runs "
+                    "one-way -- the consumer is a no-op." % (
+                        consumes, produced_now or "nothing"),
+                    where=[],
+                    ids=["artifact:" + c for c in consumes],
+                )
+
 ALL_LINTERS = [
-    CompletionSignalLinter, OrphanArtifactLinter, DivergentConstantLinter,
+    CompletionSignalLinter, FeedbackLoopLinter, OrphanArtifactLinter, DivergentConstantLinter,
     LoggerTrapLinter, TestWritesProdLinter, DeadModuleLinter,
 ]

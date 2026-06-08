@@ -28,6 +28,40 @@ PY
 )"
 
 TS="$(date '+%Y-%m-%dT%H:%M:%S')"
+# ROUTE_TO_DINGTALK: surface NEW error-severity finding-sets to an actionable
+# sink. Debounced by a fingerprint of the current error titles so the same
+# steady-state findings do not re-alert every 30 min (the noise that made the
+# old watch-log-only routing useless). Errors only. Best-effort: a send failure
+# never breaks the lint signal.
+FP_FILE="$REPORT_DIR/.seamlens_alert_fp"
+CUR_FP="$(python3 - "$REPORT" <<'PY'
+import json, sys, hashlib
+errs = sorted(f["title"] for f in json.load(open(sys.argv[1])) if f["severity"] == "error")
+print(hashlib.sha1(("\n".join(errs)).encode()).hexdigest() if errs else "none")
+PY
+)"
+if [ "$NERR" -gt 0 ] && [ "$CUR_FP" != "none" ] && [ "$CUR_FP" != "$(cat "$FP_FILE" 2>/dev/null)" ]; then
+  ( cd "$PROJECT" && python3 - "$REPORT" <<'PY'
+import json, sys
+try:
+    from lib.dingtalk import send
+except Exception:
+    sys.exit(0)
+errs = [f for f in json.load(open(sys.argv[1])) if f["severity"] == "error"]
+if not errs:
+    sys.exit(0)
+lines = ["**seamlens: %d new seam ERROR(s)**" % len(errs)]
+for f in errs[:8]:
+    where = (" @ " + f["where"][0]) if f.get("where") else ""
+    lines.append("- [%s] %s%s" % (f["linter"], f["title"], where))
+try:
+    send("\n".join(lines), force=True)
+except Exception:
+    pass
+PY
+  ) || true
+  echo "$CUR_FP" > "$FP_FILE"
+fi
 if [ "$NERR" -gt 0 ] || [ "$NWARN" -gt 0 ]; then
   echo "$TS REGRESSION: $NERR error(s), $NWARN warning(s) -- see $REPORT" >> "$WATCH"
   python3 - "$REPORT" <<'PY' >> "$WATCH"
