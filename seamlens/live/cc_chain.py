@@ -37,12 +37,17 @@ _DEFAULTS = {
     "allowed_tools": "Read,Glob,Grep",
     "narrate_timeout": 45,
     "qa_timeout": 180,
+    # Optional reasoning-effort hint (low|medium|high|...). None = leave the CLI
+    # default. `low` roughly halves an agentic auditor's deliberation time, which
+    # matters most for the headless periodic audit on a memory-tight, busy host
+    # (it completes inside a short window instead of being OOM-killed mid-think).
+    "effort": None,
 }
 
 
 class CCChain:
     def __init__(self, project_root, bin, model, base_url, token,
-                 allowed_tools, timeout, enabled=True):
+                 allowed_tools, timeout, enabled=True, effort=None):
         self.project_root = project_root
         self.bin = bin or "claude"
         self.model = model
@@ -51,6 +56,7 @@ class CCChain:
         self.allowed_tools = allowed_tools
         self.timeout = timeout
         self.enabled = bool(enabled)
+        self.effort = effort or None
         self.last_error = None
 
     @property
@@ -85,6 +91,7 @@ class CCChain:
             allowed_tools=raw.get("allowed_tools"),
             timeout=timeout,
             enabled=bool(raw.get("enabled", True)),
+            effort=raw.get("effort"),
         )
 
     def _env_and_bare(self):
@@ -137,6 +144,8 @@ class CCChain:
             cmd += ["--model", self.model]
         if system:
             cmd += ["--append-system-prompt", system]
+        if self.effort:
+            cmd += ["--effort", self.effort]
         if bare:
             cmd += ["--bare"]
         try:
@@ -167,6 +176,8 @@ class CCChain:
             cmd += ["--model", self.model]
         if system:
             cmd += ["--append-system-prompt", system]
+        if self.effort:
+            cmd += ["--effort", self.effort]
         if resume_id:
             cmd += ["--resume", resume_id]
         if bare:
