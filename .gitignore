@@ -8,3 +8,8 @@ dist/
 *.sqlite
 .DS_Store
 ._*
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
